@@ -113,6 +113,36 @@ npm run dev
 
 ---
 
+## 开机自动启动（不用一直开着终端）
+
+在 **要开机自启的那台 Mac** 上，进入项目目录执行一次：
+
+```bash
+cd ~/channel-demand
+npm run autostart:on
+```
+
+之后：
+
+- 登录/开机后会在后台自动跑服务，**不用开终端**
+- 浏览器直接打开：**http://127.0.0.1:5173/**
+- 日志在项目里的 `logs/autostart.*.log`（出问题可看这里）
+
+取消自启：
+
+```bash
+cd ~/channel-demand
+npm run autostart:off
+```
+
+说明：
+
+- 用的是 macOS「登录项 / LaunchAgent」，不是一直挂着一个终端窗口
+- 你 `git pull` 更新代码后，一般重启一下电脑，或再执行一次 `npm run autostart:on` 即可加载新代码
+- 若依赖变了：先 `npm install`，再 `npm run autostart:on`
+
+---
+
 ## 另一台电脑：代码更新了怎么同步？
 
 你在本机改完并上传到 GitHub 之后，**另外那台 Mac 不会自动更新**，需要手动拉一次：
