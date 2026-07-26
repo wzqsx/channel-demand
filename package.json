@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
-    "selfcheck": "npx vite-node scripts/selfcheck.mjs"
+    "selfcheck": "npx vite-node scripts/selfcheck.mjs",
+    "autostart:on": "bash scripts/macos-autostart-install.sh",
+    "autostart:off": "bash scripts/macos-autostart-uninstall.sh"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
