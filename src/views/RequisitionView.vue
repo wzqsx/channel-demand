@@ -21,20 +21,20 @@ import { useRequisitionStore } from '../stores/requisition';
 import { useChannelStore } from '../stores/channel';
 import { useWarehouseStore } from '../stores/warehouse';
 import { useProductStore } from '../stores/product';
-import { useWarehouseStockStore } from '../stores/warehouseStock';
 import { useCompanyStore } from '../stores/company';
 import { bootstrapStores } from '../stores/bootstrap';
 import type { Requisition, ImportRequisitionData, DemandSalesCompareRow } from '../types';
 import { weekStartSaturday, weekLabel } from '../utils/week';
 import { exportRows, downloadTemplate, readExcelFromEvent, cell, cellNum } from '../utils/excel';
 import { assertRequisitionScope, getChannelAllowedWarehouses } from '../utils/companyScope';
+import { getBottleEquivalentStock } from '../utils/packStock';
+import { formatProductQty } from '../utils/qtyDisplay';
 
 const router = useRouter();
 const requisitionStore = useRequisitionStore();
 const channelStore = useChannelStore();
 const warehouseStore = useWarehouseStore();
 const productStore = useProductStore();
-const stockStore = useWarehouseStockStore();
 const companyStore = useCompanyStore();
 
 const filterWeek = ref(weekStartSaturday());
@@ -54,6 +54,7 @@ const stockCheckResults = ref<{
   productName: string;
   demandQuantity: number;
   availableStock: number;
+  packStock: number;
   higherPriorityDemand: number;
   status: 'ok' | 'low' | 'short';
   message: string;
@@ -199,6 +200,7 @@ const checkStock = () => {
         productName: item.productName,
         demandQuantity: item.quantity,
         availableStock: 0,
+        packStock: 0,
         higherPriorityDemand: 0,
         status: 'short',
         message: '商品不存在',
@@ -206,30 +208,33 @@ const checkStock = () => {
       return;
     }
 
-    const availableStock = stockStore.getAvailableStockByWarehouses(
-      item.productCode,
-      form.value.warehouseIds,
-    );
+    // 瓶规可用 = 瓶规库存 + 箱规库存×换算比例（要货按瓶规口径）
+    const eq = getBottleEquivalentStock(item.productCode, form.value.warehouseIds);
+    const availableStock = eq.availableStock;
+    const packStock = eq.packStock + eq.packInTransit;
     const higherPriorityDemand = requisitionStore.getHigherPriorityPendingDemand(
-      item.productCode,
+      eq.baseCode,
       form.value.channelId,
       form.value.warehouseIds,
     );
+    const baseProduct = productStore.getProductByCode(eq.baseCode) || product;
     const checked = requisitionStore.checkStockAvailability(
-      item.productCode,
+      eq.baseCode,
       item.quantity,
-      product.warningThreshold,
+      baseProduct.warningThreshold,
       availableStock,
       higherPriorityDemand,
     );
+    const packHint = packStock > 0 ? `；含箱规折算 ${formatProductQty(packStock, eq.baseCode)}` : '';
     results.push({
-      productCode: item.productCode,
+      productCode: eq.baseCode,
       productName: item.productName,
       demandQuantity: item.quantity,
       availableStock,
+      packStock,
       higherPriorityDemand,
       status: checked.status,
-      message: checked.message,
+      message: checked.message + packHint,
     });
   });
   return results;
@@ -397,7 +402,7 @@ const salesFileRef = ref<HTMLInputElement | null>(null);
 <template>
   <PageShell
     title="渠道要货"
-    help="按主体分渠道/仓库 · 同主体内优先级占库存 · 审批后可录入本周实际销货做虚报核对\n推荐流程：1.库存导入（全量替换）→ 2.渠道要货 + 验库存 → 3.审批通过 → 4.录入本周实际销货 → 看是否虚报"
+    help="按主体分渠道/仓库 · 同主体内优先级占库存 · 审批后可录入本周实际销货做虚报核对\n库存口径：要货按瓶规；箱规编码库存会按「组合比例」折算进瓶规后再验库存\n推荐流程：1.库存导入（全量替换）→ 2.渠道要货 + 验库存 → 3.审批通过 → 4.录入本周实际销货"
   >
     <template #toolbar>
       <ElDatePicker
@@ -547,7 +552,7 @@ const salesFileRef = ref<HTMLInputElement | null>(null);
             <HelpTip
               inline
               title="验库存说明"
-              content="验库存 = 所选仓库(库存+在途) − 同主体更高优先级、且仓库有交集的待审批要货"
+              content="验库存 = 所选仓库(瓶规库存+在途 + 箱规折算) − 同主体更高优先级、且仓库有交集的待审批要货。箱规需在商品里勾选组合并填写基础瓶规编码与换算比例。"
             />
           </div>
         </div>
@@ -563,11 +568,28 @@ const salesFileRef = ref<HTMLInputElement | null>(null);
       <div v-if="stockCheckResults.length" class="import-block">
         <div class="import-block__head"><span>库存检查</span></div>
         <ElTable :data="stockCheckResults" border size="small" max-height="200">
-          <ElTableColumn prop="productCode" label="编码" width="100" />
+          <ElTableColumn prop="productCode" label="瓶规编码" width="100" />
           <ElTableColumn prop="productName" label="名称" min-width="120" />
-          <ElTableColumn prop="demandQuantity" label="需求" width="80" />
-          <ElTableColumn prop="availableStock" label="可用(所选仓)" width="110" />
-          <ElTableColumn prop="higherPriorityDemand" label="高优占用" width="90" />
+          <ElTableColumn label="需求" width="110" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ formatProductQty(row.demandQuantity, row.productCode) }}
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="可用(含箱规)" width="120" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ formatProductQty(row.availableStock, row.productCode) }}
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="其中箱规折算" width="120" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ row.packStock > 0 ? formatProductQty(row.packStock, row.productCode) : '-' }}
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="高优占用" width="110" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ formatProductQty(row.higherPriorityDemand, row.productCode) }}
+            </template>
+          </ElTableColumn>
           <ElTableColumn label="状态" width="90">
             <template #default="{ row }">
               <ElTag size="small" :type="row.status === 'short' ? 'danger' : row.status === 'low' ? 'warning' : 'success'">

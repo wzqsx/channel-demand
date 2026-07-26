@@ -22,6 +22,7 @@ import { useWarehouseStore } from '../stores/warehouse';
 import { bootstrapStores } from '../stores/bootstrap';
 import { weekStartSaturday, weekLabel } from '../utils/week';
 import { buildShortageAndWarnings, type AlertKind, type ShortageAlertRow } from '../utils/shortageAlert';
+import { formatProductQty } from '../utils/qtyDisplay';
 import { exportRows } from '../utils/excel';
 
 const route = useRoute();
@@ -106,6 +107,8 @@ const kindTag = (kind: AlertKind) =>
     ? { label: '缺货', type: 'danger' as const }
     : { label: '预警', type: 'warning' as const };
 
+const fmtQty = (qty: number, productCode: string) => formatProductQty(qty, productCode);
+
 const handleExport = () => {
   const data = filteredRows.value.map(r => ({
     周起始: weekStart.value,
@@ -113,12 +116,14 @@ const handleExport = () => {
     类型: r.kind === 'shortage' ? '缺货' : '预警',
     商品编码: r.productCode,
     商品名称: r.productName,
-    当前库存: r.currentStock,
-    在途: r.inTransitStock,
-    可用库存: r.availableStock,
-    预警阈值: r.warningThreshold,
-    要货需求: r.totalDemand,
-    缺口: r.shortage,
+    当前库存: fmtQty(r.currentStock, r.productCode),
+    在途: fmtQty(r.inTransitStock, r.productCode),
+    可用库存: fmtQty(r.availableStock, r.productCode),
+    瓶规自身: fmtQty(r.ownStock, r.productCode),
+    箱规折算: fmtQty(r.packStock, r.productCode),
+    预警阈值: fmtQty(r.warningThreshold, r.productCode),
+    要货需求: fmtQty(r.totalDemand, r.productCode),
+    缺口: fmtQty(r.shortage, r.productCode),
     涉及渠道: r.channels.join('、'),
     仓库: getWarehouseNames(r.warehouseIds),
     说明: r.statusText,
@@ -135,7 +140,8 @@ const handleExport = () => {
 <template>
   <PageShell
     title="缺货与预警"
-    help="按主体隔离查看（含新增主体，即使暂无数据也会列出）。\n缺货=本周要货需求超过该主体仓库可用库存；预警=该主体仓库可用库存≤商品预警阈值。\n新主体需先建仓库并导入库存/要货后，才会出现缺货或预警明细。"
+    page-scroll
+    help="按主体隔离查看。\n缺货/预警的可用库存 = 瓶规库存 + 箱规库存×换算比例（要货按瓶规口径）。\n箱规商品需在「商品」勾选组合，填写基础瓶规编码与比例。\n数量展示按瓶规「每箱瓶数」换算，如 100箱零3瓶。"
   >
     <template #metrics>
       <StatCards :items="statItems" />
@@ -198,37 +204,66 @@ const handleExport = () => {
               当前周次/筛选下暂无缺货或预警。
             </template>
           </div>
-          <ElTable v-else :data="group.rows" border size="small" stripe class="block-table">
-            <ElTableColumn label="类型" width="80">
+          <ElTable
+            v-else
+            :data="group.rows"
+            border
+            size="small"
+            stripe
+            class="block-table"
+            table-layout="auto"
+          >
+            <ElTableColumn label="类型" width="72">
               <template #default="{ row }">
                 <ElTag size="small" :type="kindTag((row as ShortageAlertRow).kind).type">
                   {{ kindTag((row as ShortageAlertRow).kind).label }}
                 </ElTag>
               </template>
             </ElTableColumn>
-            <ElTableColumn prop="productCode" label="编码" width="110" />
-            <ElTableColumn prop="productName" label="商品" min-width="140" show-overflow-tooltip />
-            <ElTableColumn prop="availableStock" label="可用库存" width="90" />
-            <ElTableColumn prop="warningThreshold" label="预警线" width="80" />
-            <ElTableColumn prop="totalDemand" label="要货需求" width="90" />
-            <ElTableColumn prop="shortage" label="缺口" width="80">
+            <ElTableColumn prop="productCode" label="编码" width="100" />
+            <ElTableColumn prop="productName" label="商品" min-width="120" show-overflow-tooltip />
+            <ElTableColumn label="可用库存" min-width="110" show-overflow-tooltip>
+              <template #default="{ row }">
+                {{ fmtQty((row as ShortageAlertRow).availableStock, (row as ShortageAlertRow).productCode) }}
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="其中箱规折算" min-width="110" show-overflow-tooltip>
+              <template #default="{ row }">
+                {{
+                  (row as ShortageAlertRow).packStock > 0
+                    ? fmtQty((row as ShortageAlertRow).packStock, (row as ShortageAlertRow).productCode)
+                    : '-'
+                }}
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="预警线" min-width="100" show-overflow-tooltip>
+              <template #default="{ row }">
+                {{ fmtQty((row as ShortageAlertRow).warningThreshold, (row as ShortageAlertRow).productCode) }}
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="要货需求" min-width="110" show-overflow-tooltip>
+              <template #default="{ row }">
+                {{ fmtQty((row as ShortageAlertRow).totalDemand, (row as ShortageAlertRow).productCode) }}
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="缺口" min-width="120" show-overflow-tooltip>
               <template #default="{ row }">
                 <span :class="{ danger: (row as ShortageAlertRow).shortage > 0 }">
-                  {{ (row as ShortageAlertRow).shortage }}
+                  {{ fmtQty((row as ShortageAlertRow).shortage, (row as ShortageAlertRow).productCode) }}
                 </span>
               </template>
             </ElTableColumn>
-            <ElTableColumn label="渠道" min-width="120" show-overflow-tooltip>
+            <ElTableColumn label="渠道" min-width="100" show-overflow-tooltip>
               <template #default="{ row }">
                 {{ (row as ShortageAlertRow).channels.join('、') || '-' }}
               </template>
             </ElTableColumn>
-            <ElTableColumn label="仓库范围" min-width="140" show-overflow-tooltip>
+            <ElTableColumn label="仓库范围" min-width="120" show-overflow-tooltip>
               <template #default="{ row }">
                 {{ getWarehouseNames((row as ShortageAlertRow).warehouseIds) }}
               </template>
             </ElTableColumn>
-            <ElTableColumn prop="statusText" label="说明" min-width="140" show-overflow-tooltip />
+            <ElTableColumn prop="statusText" label="说明" min-width="120" show-overflow-tooltip />
           </ElTable>
         </section>
       </div>
@@ -238,12 +273,7 @@ const handleExport = () => {
 
 <style scoped>
 .wrap {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 12px 16px;
-  overflow: hidden;
+  padding: 4px 4px 20px;
 }
 
 .week-label {
@@ -262,19 +292,19 @@ const handleExport = () => {
 }
 
 .groups {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
+/* 禁止被父级 flex 压扁，避免多主体表格叠在一起 */
 .company-block {
+  flex: 0 0 auto;
   border: 1px solid var(--erp-border);
   border-radius: 10px;
   background: #fff;
-  overflow: hidden;
+  overflow: visible;
+  position: relative;
 }
 
 .company-block__head {
@@ -285,6 +315,7 @@ const handleExport = () => {
   padding: 10px 14px;
   background: #fafbfc;
   border-bottom: 1px solid var(--erp-border);
+  border-radius: 10px 10px 0 0;
 }
 
 .company-block__title {
@@ -317,6 +348,14 @@ const handleExport = () => {
 
 .block-table {
   width: 100%;
+}
+
+.block-table :deep(.el-table) {
+  --el-table-header-bg-color: #fafbfc;
+}
+
+.block-table :deep(.el-table__inner-wrapper::before) {
+  display: none;
 }
 
 .danger {
