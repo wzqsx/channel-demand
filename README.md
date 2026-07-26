@@ -60,13 +60,6 @@ git clone https://github.com/wzqsx/channel-demand.git
 cd channel-demand
 ```
 
-已有目录、只想更新到最新：
-
-```bash
-cd ~/channel-demand
-git pull
-```
-
 ---
 
 ### 3. 安装项目依赖
@@ -107,7 +100,7 @@ npm run dev
 
 ---
 
-### 6. 下次再使用
+### 6. 下次再使用（不更新代码，只打开）
 
 ```bash
 cd ~/channel-demand
@@ -117,6 +110,34 @@ npm run dev
 再浏览器打开 `http://localhost:5173/`。
 
 换电脑后是空数据，需要重新维护主体/仓库/商品，或自行导入 Excel。
+
+---
+
+## 另一台电脑：代码更新了怎么同步？
+
+你在本机改完并上传到 GitHub 之后，**另外那台 Mac 不会自动更新**，需要手动拉一次：
+
+```bash
+# 1. 进入项目目录（路径按你实际安装位置）
+cd ~/channel-demand
+
+# 2. 拉取 GitHub 上的最新代码
+git pull
+
+# 3. 若依赖有变化（package.json 变了），再装一次；没变可跳过
+npm install
+
+# 4. 重新启动
+npm run dev
+```
+
+然后浏览器打开（或刷新）**http://localhost:5173/**。
+
+说明：
+
+- `git pull` = 更新命令（把 GitHub 最新代码拉到这台电脑）
+- 若启动时报依赖相关错误，再执行一次 `npm install`
+- **网页里的业务数据不会被 `git pull` 覆盖或同步**（数据在浏览器本地）；只更新程序代码
 
 ---
 
