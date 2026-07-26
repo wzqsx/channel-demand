@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
+import { storeToRefs } from 'pinia';
 import {
   ElTable,
   ElTableColumn,
@@ -14,17 +15,21 @@ import {
   ElMessage,
   ElTag,
 } from 'element-plus';
+import PageShell from '../components/PageShell.vue';
+import HelpTip from '../components/HelpTip.vue';
 import { useChannelStore } from '../stores/channel';
 import { useWarehouseStore } from '../stores/warehouse';
 import { useCompanyStore } from '../stores/company';
+import { bootstrapStores } from '../stores/bootstrap';
 import type { Channel } from '../types';
+import { readExcelFromEvent, exportRows, downloadTemplate, cell, cellNum } from '../utils/excel';
 
 const channelStore = useChannelStore();
 const warehouseStore = useWarehouseStore();
 const companyStore = useCompanyStore();
-const channels = ref<Channel[]>([]);
-const warehouses = ref<any[]>([]);
-const companies = ref<any[]>([]);
+const { channels } = storeToRefs(channelStore);
+const { companies } = storeToRefs(companyStore);
+
 const dialogVisible = ref(false);
 const isEdit = ref(false);
 const form = ref({
@@ -34,14 +39,10 @@ const form = ref({
   companyId: '',
 });
 const editId = ref('');
+const importRef = ref<HTMLInputElement | null>(null);
 
 onMounted(() => {
-  channelStore.initChannels();
-  warehouseStore.initWarehouses();
-  companyStore.initCompanies();
-  channels.value = channelStore.channels;
-  warehouses.value = warehouseStore.warehouses;
-  companies.value = companyStore.companies;
+  bootstrapStores();
 });
 
 const openDialog = (channel?: Channel) => {
@@ -57,39 +58,28 @@ const openDialog = (channel?: Channel) => {
   } else {
     isEdit.value = false;
     editId.value = '';
-    form.value = {
-      name: '',
-      warehouseIds: [],
-      priority: 100,
-      companyId: '',
-    };
+    form.value = { name: '', warehouseIds: [], priority: 100, companyId: '' };
   }
   dialogVisible.value = true;
 };
 
+const handleCompanyChange = () => {
+  form.value.warehouseIds = [];
+};
+
 const handleSubmit = () => {
-  if (!form.value.name) {
-    ElMessage.error('请填写渠道名称');
-    return;
+  if (!form.value.name) return ElMessage.error('请填写渠道名称');
+  if (!form.value.companyId) return ElMessage.error('请选择所属主体');
+  if (!companyStore.getCompanyById(form.value.companyId)) {
+    return ElMessage.error('所属主体不存在，请重新选择');
   }
+  if (!form.value.warehouseIds.length) return ElMessage.error('请至少选择一个仓库');
 
-  if (!form.value.companyId) {
-    ElMessage.error('请选择所属主体');
-    return;
-  }
-
-  if (form.value.warehouseIds.length === 0) {
-    ElMessage.error('请至少选择一个仓库');
-    return;
-  }
-
-  // 验证仓库是否属于同一主体
-  const companyWarehouses = warehouseStore.getWarehousesByCompany(form.value.companyId);
-  const companyWarehouseIds = companyWarehouses.map(w => w.id);
-  const invalidWarehouses = form.value.warehouseIds.filter(id => !companyWarehouseIds.includes(id));
-  if (invalidWarehouses.length > 0) {
-    ElMessage.error('所选仓库必须属于同一主体');
-    return;
+  const companyWarehouseIds = warehouseStore
+    .getWarehousesByCompany(form.value.companyId)
+    .map(w => w.id);
+  if (form.value.warehouseIds.some(id => !companyWarehouseIds.includes(id))) {
+    return ElMessage.error('所选仓库必须属于同一主体，不能跨主体');
   }
 
   if (isEdit.value) {
@@ -99,138 +89,180 @@ const handleSubmit = () => {
     channelStore.addChannel(form.value);
     ElMessage.success('添加成功');
   }
-
-  channels.value = channelStore.channels;
   dialogVisible.value = false;
 };
 
 const handleDelete = (id: string) => {
   channelStore.deleteChannel(id);
-  channels.value = channelStore.channels;
   ElMessage.success('删除成功');
 };
 
-const getWarehouseNames = (ids: string[]) => {
-  return ids.map(id => {
-    const warehouse = warehouseStore.getWarehouseById(id);
-    return warehouse ? warehouse.name : '';
-  }).join(', ');
+const getCompanyCode = (id: string) => companyStore.getCompanyById(id)?.code || '';
+
+const getWarehouseCodes = (ids: string[]) =>
+  ids
+    .map(id => warehouseStore.getWarehouseById(id)?.code)
+    .filter((c): c is string => !!c)
+    .join(',');
+
+const handleExport = () => {
+  exportRows(
+    channels.value.map(ch => ({
+      渠道名称: ch.name,
+      主体编码: getCompanyCode(ch.companyId),
+      '仓库编码(逗号分隔)': getWarehouseCodes(ch.warehouseIds),
+      优先级: ch.priority,
+    })),
+    '渠道',
+  );
+  ElMessage.success('已导出');
 };
 
-const getCompanyName = (id: string) => {
-  const company = companyStore.getCompanyById(id);
-  return company ? company.name : '';
+const handleTemplate = () => {
+  downloadTemplate(['渠道名称', '主体编码', '仓库编码(逗号分隔)', '优先级'], '渠道导入模板');
 };
 
+const handleImport = async (event: Event) => {
+  const rows = await readExcelFromEvent(event);
+  let n = 0;
+  let skipped = 0;
+  rows.forEach(row => {
+    const name = cell(row, '渠道名称', 'name');
+    const companyCode = cell(row, '主体编码', 'companyCode');
+    const warehouseCodesRaw = cell(row, '仓库编码(逗号分隔)', '仓库编码', 'warehouseCodes');
+    const priority = cellNum(row, '优先级', 'priority') || 100;
+    if (!name || !companyCode) return;
+
+    const company = companyStore.getCompanyByCode(companyCode);
+    if (!company) {
+      skipped += 1;
+      return;
+    }
+
+    const codes = warehouseCodesRaw.split(/[,，]/).map(c => c.trim()).filter(Boolean);
+    const companyWarehouses = warehouseStore.getWarehousesByCompany(company.id);
+    const warehouseIds = codes
+      .map(code => companyWarehouses.find(w => w.code === code)?.id)
+      .filter((id): id is string => !!id);
+    if (!warehouseIds.length) {
+      skipped += 1;
+      return;
+    }
+
+    channelStore.upsertChannel({
+      name,
+      companyId: company.id,
+      warehouseIds,
+      priority,
+    });
+    n += 1;
+  });
+  ElMessage.success(
+    skipped
+      ? `导入完成 ${n} 条，跳过 ${skipped} 条（主体或仓库无效）`
+      : `导入完成 ${n} 条（按名称+主体覆盖）`,
+  );
+};
+
+const getWarehouseNames = (ids: string[]) =>
+  ids.map(id => warehouseStore.getWarehouseById(id)?.name || id).join('、');
+const getCompanyName = (id: string) => companyStore.getCompanyById(id)?.name || id;
 const getPriorityLabel = (priority: number) => {
-  if (priority <= 3) return `P${priority}（高）`;
-  if (priority <= 10) return `P${priority}（中）`;
-  return `P${priority}（低）`;
+  if (priority <= 3) return `P${priority} 高`;
+  if (priority <= 10) return `P${priority} 中`;
+  return `P${priority} 低`;
 };
-
-// 根据选择的主体过滤仓库
-const filteredWarehouses = (companyId: string) => {
-  if (!companyId) return warehouses.value;
-  return warehouseStore.getWarehousesByCompany(companyId);
-};
+const filteredWarehouses = (companyId: string) =>
+  companyId ? warehouseStore.getWarehousesByCompany(companyId) : [];
 </script>
 
 <template>
-  <div class="page-container">
-    <div class="page-header">
-      <h2>渠道管理</h2>
-      <div class="header-actions">
-        <ElButton type="primary" @click="openDialog()">添加渠道</ElButton>
-      </div>
+  <PageShell title="渠道管理" help="按主体隔离；优先级数字越小越高，仅同主体内参与占库存竞争。主体/仓库下拉与主数据实时同步。">
+    <template #toolbar>
+      <input ref="importRef" type="file" accept=".xlsx,.xls" class="hidden-file" @change="handleImport" />
+      <ElButton type="primary" size="small" @click="openDialog()">添加渠道</ElButton>
+      <ElButton size="small" @click="importRef?.click()">导入</ElButton>
+      <ElButton size="small" @click="handleExport">导出</ElButton>
+      <ElButton size="small" @click="handleTemplate">下载模板</ElButton>
+    </template>
+    <div class="table-wrap">
+      <ElTable :data="channels" border size="small" stripe class="erp-data-table" height="100%">
+        <ElTableColumn prop="name" label="渠道" width="140" />
+        <ElTableColumn label="主体" width="120">
+          <template #default="{ row }">{{ getCompanyName((row as Channel).companyId) }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="可用仓库" min-width="200">
+          <template #default="{ row }">{{ getWarehouseNames((row as Channel).warehouseIds) }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="优先级" width="110">
+          <template #default="{ row }">
+            <ElTag
+              size="small"
+              :type="(row as Channel).priority <= 3 ? 'danger' : (row as Channel).priority <= 10 ? 'warning' : 'info'"
+            >
+              {{ getPriorityLabel((row as Channel).priority) }}
+            </ElTag>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="操作" width="140" fixed="right">
+          <template #default="{ row }">
+            <ElButton link type="primary" size="small" @click="openDialog(row as Channel)">编辑</ElButton>
+            <ElButton link type="danger" size="small" @click="handleDelete((row as Channel).id)">删除</ElButton>
+          </template>
+        </ElTableColumn>
+      </ElTable>
     </div>
 
-    <ElTable :data="channels" border>
-      <ElTableColumn prop="name" label="渠道名称" />
-      <ElTableColumn label="所属主体" width="120">
-        <template #default="scope">
-          {{ getCompanyName(scope.row.companyId) }}
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="允许选择的仓库">
-        <template #default="scope">
-          {{ getWarehouseNames(scope.row.warehouseIds) }}
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="优先级" width="120">
-        <template #default="scope">
-          <ElTag :type="scope.row.priority <= 3 ? 'danger' : scope.row.priority <= 10 ? 'warning' : 'info'">
-            {{ getPriorityLabel(scope.row.priority) }}
-          </ElTag>
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="操作">
-        <template #default="scope">
-          <ElButton size="small" @click="openDialog(scope.row as Channel)">编辑</ElButton>
-          <ElButton size="small" type="danger" @click="handleDelete((scope.row as Channel).id)">删除</ElButton>
-        </template>
-      </ElTableColumn>
-    </ElTable>
-
-    <ElDialog v-model="dialogVisible" :title="isEdit ? '编辑渠道' : '添加渠道'" width="550px">
-      <ElForm :model="form" label-width="120px">
-        <ElFormItem label="渠道名称">
-          <ElInput v-model="form.name" />
-        </ElFormItem>
+    <ElDialog v-model="dialogVisible" :title="isEdit ? '编辑渠道' : '添加渠道'" width="520px">
+      <ElForm :model="form" label-width="100px" size="small">
+        <ElFormItem label="渠道名称"><ElInput v-model="form.name" /></ElFormItem>
         <ElFormItem label="所属主体">
-          <ElSelect v-model="form.companyId" placeholder="请选择所属主体">
+          <ElSelect v-model="form.companyId" style="width: 100%" filterable @change="handleCompanyChange">
             <ElOption
-              v-for="company in companies"
-              :key="company.id"
-              :label="company.name"
-              :value="company.id"
+              v-for="c in companies"
+              :key="c.id"
+              :label="`${c.name}（${c.code}）`"
+              :value="c.id"
             />
           </ElSelect>
         </ElFormItem>
-        <ElFormItem label="允许选择的仓库">
-          <ElSelect v-model="form.warehouseIds" multiple placeholder="请选择仓库">
+        <ElFormItem label="可用仓库">
+          <ElSelect v-model="form.warehouseIds" multiple style="width: 100%">
             <ElOption
-              v-for="warehouse in filteredWarehouses(form.companyId)"
-              :key="warehouse.id"
-              :label="warehouse.name"
-              :value="warehouse.id"
+              v-for="w in filteredWarehouses(form.companyId)"
+              :key="w.id"
+              :label="w.name"
+              :value="w.id"
             />
           </ElSelect>
         </ElFormItem>
-        <ElFormItem label="优先级">
-          <ElInputNumber v-model="form.priority" :min="1" />
-          <span style="margin-left: 8px; color: #999; font-size: 12px;">数字越小优先级越高</span>
+        <ElFormItem>
+          <template #label>
+            <span class="label-with-help">
+              优先级
+              <HelpTip inline content="数字越小优先级越高（同主体内比较）" />
+            </span>
+          </template>
+          <ElInputNumber v-model="form.priority" :min="1" style="width: 100%" />
         </ElFormItem>
       </ElForm>
       <template #footer>
-        <ElButton @click="dialogVisible = false">取消</ElButton>
-        <ElButton type="primary" @click="handleSubmit">确定</ElButton>
+        <ElButton size="small" @click="dialogVisible = false">取消</ElButton>
+        <ElButton size="small" type="primary" @click="handleSubmit">确定</ElButton>
       </template>
     </ElDialog>
-  </div>
+  </PageShell>
 </template>
 
 <style scoped>
-.page-container {
-  padding: 20px;
+.table-wrap {
+  flex: 1;
+  min-height: 0;
+  padding: 0 12px;
+  overflow: hidden;
 }
 
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-
-.header-actions {
-  display: flex;
-  gap: 10px;
-}
-
-:deep(.el-select) {
-  width: 100%;
-}
-
-:deep(.el-input-number) {
-  width: 100%;
+.hidden-file {
+  display: none;
 }
 </style>

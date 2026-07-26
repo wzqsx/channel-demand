@@ -1,16 +1,21 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import type { WarehouseStock, ImportWarehouseStockData, CustomFieldConfig } from '../types';
+import type {
+  WarehouseStock,
+  ImportWarehouseStockData,
+  CustomFieldConfig,
+  StockSnapshot,
+} from '../types';
 import { useWarehouseStore } from './warehouse';
+import { useStockSnapshotStore } from './stockSnapshot';
+import { weekStartSaturday } from '../utils/week';
 
 export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   const stocks = ref<WarehouseStock[]>([]);
-  
-  // 自定义字段配置
   const customFields = ref<CustomFieldConfig[]>([]);
 
-  // 模拟初始数据
   const initStocks = () => {
+    if (stocks.value.length > 0) return;
     stocks.value = [
       { id: '1', warehouseId: 'W001', productCode: 'P001', stock: 200, inTransitStock: 50 },
       { id: '2', warehouseId: 'W001', productCode: 'P002', stock: 50, inTransitStock: 100 },
@@ -20,131 +25,155 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
       { id: '6', warehouseId: 'W003', productCode: 'P004', stock: 10, inTransitStock: 0 },
       { id: '7', warehouseId: 'W004', productCode: 'P001', stock: 0, inTransitStock: 80 },
       { id: '8', warehouseId: 'W004', productCode: 'P005', stock: 200, inTransitStock: 40 },
+      { id: '9', warehouseId: 'W005', productCode: 'P001', stock: 100, inTransitStock: 20 },
+      { id: '10', warehouseId: 'W006', productCode: 'P001', stock: 80, inTransitStock: 0 },
+      { id: '11', warehouseId: 'W008', productCode: 'P001', stock: 60, inTransitStock: 10 },
     ];
   };
 
-  // 获取指定仓库的库存
-  const getStocksByWarehouse = (warehouseId: string) => {
-    return stocks.value.filter(s => s.warehouseId === warehouseId);
-  };
+  const getStocksByWarehouse = (warehouseId: string) =>
+    stocks.value.filter(s => s.warehouseId === warehouseId);
 
-  // 获取指定商品在各仓库的库存
-  const getStocksByProduct = (productCode: string) => {
-    return stocks.value.filter(s => s.productCode === productCode);
-  };
+  const getStocksByProduct = (productCode: string) =>
+    stocks.value.filter(s => s.productCode === productCode);
 
-  // 获取指定仓库指定商品的库存
-  const getStock = (warehouseId: string, productCode: string) => {
-    return stocks.value.find(s => s.warehouseId === warehouseId && s.productCode === productCode);
-  };
+  const getStock = (warehouseId: string, productCode: string) =>
+    stocks.value.find(s => s.warehouseId === warehouseId && s.productCode === productCode);
 
-  // 获取指定商品的总库存
-  const getTotalStock = (productCode: string) => {
-    return stocks.value
-      .filter(s => s.productCode === productCode)
+  const getTotalStock = (productCode: string, warehouseIds?: string[]) =>
+    stocks.value
+      .filter(s => s.productCode === productCode && (!warehouseIds || warehouseIds.includes(s.warehouseId)))
       .reduce((sum, s) => sum + s.stock, 0);
-  };
 
-  // 获取指定商品的总在途库存
-  const getTotalInTransitStock = (productCode: string) => {
-    return stocks.value
-      .filter(s => s.productCode === productCode)
+  const getTotalInTransitStock = (productCode: string, warehouseIds?: string[]) =>
+    stocks.value
+      .filter(s => s.productCode === productCode && (!warehouseIds || warehouseIds.includes(s.warehouseId)))
       .reduce((sum, s) => sum + s.inTransitStock, 0);
-  };
 
-  // 获取指定商品的可用库存（当前库存 + 在途库存）
-  const getAvailableStock = (productCode: string) => {
-    return stocks.value
-      .filter(s => s.productCode === productCode)
+  /** 全仓合计（兼容旧调用） */
+  const getAvailableStock = (productCode: string) =>
+    getAvailableStockByWarehouses(productCode);
+
+  /** 按所选仓库汇总：库存 + 在途 */
+  const getAvailableStockByWarehouses = (productCode: string, warehouseIds?: string[]) =>
+    stocks.value
+      .filter(s => s.productCode === productCode && (!warehouseIds?.length || warehouseIds.includes(s.warehouseId)))
       .reduce((sum, s) => sum + s.stock + s.inTransitStock, 0);
-  };
 
-  // 添加/更新库存
-  const upsertStock = (warehouseId: string, productCode: string, stock: number, inTransitStock: number = 0, customFields?: Record<string, any>) => {
-    const index = stocks.value.findIndex(s => s.warehouseId === warehouseId && s.productCode === productCode);
+  const upsertStock = (
+    warehouseId: string,
+    productCode: string,
+    stock: number,
+    inTransitStock: number = 0,
+    fields?: Record<string, any>,
+  ) => {
+    const index = stocks.value.findIndex(
+      s => s.warehouseId === warehouseId && s.productCode === productCode,
+    );
     if (index !== -1) {
       stocks.value[index].stock = stock;
       stocks.value[index].inTransitStock = inTransitStock;
-      if (customFields) {
-        stocks.value[index].customFields = customFields;
-      }
+      if (fields) stocks.value[index].customFields = fields;
     } else {
       stocks.value.push({
-        id: Date.now().toString(),
+        id: Date.now().toString() + Math.random().toString(36).slice(2, 7),
         warehouseId,
         productCode,
         stock,
         inTransitStock,
-        customFields,
+        customFields: fields,
       });
     }
   };
 
-  // 删除库存记录
   const deleteStock = (id: string) => {
     const index = stocks.value.findIndex(s => s.id === id);
-    if (index !== -1) {
-      stocks.value.splice(index, 1);
-    }
+    if (index !== -1) stocks.value.splice(index, 1);
   };
 
-  // 设置自定义字段配置
   const setCustomFields = (fields: CustomFieldConfig[]) => {
     customFields.value = fields;
   };
 
-  // 导入库存数据（支持自定义字段）
-  const importStocks = (data: ImportWarehouseStockData[]) => {
+  const addCustomField = (field: Omit<CustomFieldConfig, 'key'>) => {
+    const key = field.label.replace(/\s+/g, '_').toLowerCase();
+    if (!customFields.value.find(f => f.key === key)) {
+      customFields.value.push({ key, ...field });
+    }
+  };
+
+  const updateCustomField = (key: string, field: Partial<CustomFieldConfig>) => {
+    const index = customFields.value.findIndex(f => f.key === key);
+    if (index !== -1) {
+      customFields.value[index] = { ...customFields.value[index], ...field };
+    }
+  };
+
+  const removeCustomField = (key: string) => {
+    const index = customFields.value.findIndex(f => f.key === key);
+    if (index !== -1) customFields.value.splice(index, 1);
+  };
+
+  /**
+   * 导入库存。无万里牛对接时，建议每周「全量替换」一次。
+   * 导入前自动快照，便于回滚与周对比。
+   */
+  const importStocks = (
+    data: ImportWarehouseStockData[],
+    replaceAll: boolean = false,
+    description: string = '',
+    weekStart?: string,
+  ) => {
     const warehouseStore = useWarehouseStore();
-    
-    // 识别自定义字段（排除已知字段）
+    const snapshotStore = useStockSnapshotStore();
+    const week = weekStart || weekStartSaturday();
+
+    if (stocks.value.length > 0) {
+      snapshotStore.createSnapshot(
+        stocks.value,
+        description || `${replaceAll ? '全量替换' : '增量导入'}前自动备份 · ${week}`,
+        week,
+      );
+    }
+
+    if (replaceAll) stocks.value = [];
+
     const knownFields = ['warehouseCode', 'productCode', 'productName', 'stock', 'inTransitStock'];
-    const detectedCustomFields: CustomFieldConfig[] = [];
-    
     if (data.length > 0) {
       const firstItem = data[0];
       for (const key in firstItem) {
-        if (!knownFields.includes(key)) {
-          // 根据值的类型推断字段类型
-          let type: 'text' | 'number' | 'date' = 'text';
+        if (!knownFields.includes(key) && !customFields.value.find(f => f.key === key)) {
           const value = firstItem[key];
-          if (typeof value === 'number') {
-            type = 'number';
-          } else if (typeof value === 'string' && !isNaN(Date.parse(value))) {
-            type = 'date';
-          }
-          detectedCustomFields.push({ key, label: key, type });
+          let type: 'text' | 'number' | 'date' = 'text';
+          if (typeof value === 'number') type = 'number';
+          else if (typeof value === 'string' && !isNaN(Date.parse(value))) type = 'date';
+          customFields.value.push({ key, label: key, type });
         }
       }
     }
-    
-    // 更新自定义字段配置
-    if (detectedCustomFields.length > 0) {
-      // 合并新字段，不覆盖已有的配置
-      detectedCustomFields.forEach(newField => {
-        const existing = customFields.value.find(f => f.key === newField.key);
-        if (!existing) {
-          customFields.value.push(newField);
-        }
-      });
-    }
-    
-    // 导入数据
+
+    let imported = 0;
     data.forEach(item => {
-      // 通过仓库编码查找仓库ID
       const warehouse = warehouseStore.warehouses.find(w => w.code === item.warehouseCode);
-      if (warehouse) {
-        // 提取自定义字段
-        const customFieldsData: Record<string, any> = {};
-        for (const key in item) {
-          if (!knownFields.includes(key)) {
-            customFieldsData[key] = item[key];
-          }
-        }
-        
-        upsertStock(warehouse.id, item.productCode, item.stock, item.inTransitStock || 0, Object.keys(customFieldsData).length > 0 ? customFieldsData : undefined);
+      if (!warehouse) return;
+      const customFieldsData: Record<string, any> = {};
+      for (const key in item) {
+        if (!knownFields.includes(key)) customFieldsData[key] = item[key];
       }
+      upsertStock(
+        warehouse.id,
+        item.productCode,
+        Number(item.stock) || 0,
+        Number(item.inTransitStock) || 0,
+        Object.keys(customFieldsData).length > 0 ? customFieldsData : undefined,
+      );
+      imported += 1;
     });
+    return imported;
+  };
+
+  const restoreFromSnapshot = (snapshot: StockSnapshot) => {
+    stocks.value = JSON.parse(JSON.stringify(snapshot.stocks));
   };
 
   return {
@@ -157,9 +186,14 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     getTotalStock,
     getTotalInTransitStock,
     getAvailableStock,
+    getAvailableStockByWarehouses,
     upsertStock,
     deleteStock,
     setCustomFields,
+    addCustomField,
+    updateCustomField,
+    removeCustomField,
     importStocks,
+    restoreFromSnapshot,
   };
-});
+}, { persist: true });

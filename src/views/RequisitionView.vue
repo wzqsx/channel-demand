@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
+import { useRouter } from 'vue-router';
 import {
   ElTable,
   ElTableColumn,
@@ -12,16 +13,23 @@ import {
   ElMessage,
   ElTag,
   ElMessageBox,
+  ElDatePicker,
 } from 'element-plus';
-import * as XLSX from 'xlsx';
+import PageShell from '../components/PageShell.vue';
+import HelpTip from '../components/HelpTip.vue';
 import { useRequisitionStore } from '../stores/requisition';
 import { useChannelStore } from '../stores/channel';
 import { useWarehouseStore } from '../stores/warehouse';
 import { useProductStore } from '../stores/product';
 import { useWarehouseStockStore } from '../stores/warehouseStock';
 import { useCompanyStore } from '../stores/company';
-import type { Requisition, ImportRequisitionData } from '../types';
+import { bootstrapStores } from '../stores/bootstrap';
+import type { Requisition, ImportRequisitionData, DemandSalesCompareRow } from '../types';
+import { weekStartSaturday, weekLabel } from '../utils/week';
+import { exportRows, downloadTemplate, readExcelFromEvent, cell, cellNum } from '../utils/excel';
+import { assertRequisitionScope, getChannelAllowedWarehouses } from '../utils/companyScope';
 
+const router = useRouter();
 const requisitionStore = useRequisitionStore();
 const channelStore = useChannelStore();
 const warehouseStore = useWarehouseStore();
@@ -29,21 +37,18 @@ const productStore = useProductStore();
 const stockStore = useWarehouseStockStore();
 const companyStore = useCompanyStore();
 
-const requisitions = ref<Requisition[]>([]);
-const channels = ref<any[]>([]);
-const warehouses = ref<any[]>([]);
-const companies = ref<any[]>([]);
+const filterWeek = ref(weekStartSaturday());
+const filterCompanyId = ref('');
 
 const form = ref({
   companyId: '',
   channelId: '',
   warehouseIds: [] as string[],
+  weekStart: weekStartSaturday(),
 });
 
 const importDialogVisible = ref(false);
 const importData = ref<ImportRequisitionData[]>([]);
-
-// 库存检查结果
 const stockCheckResults = ref<{
   productCode: string;
   productName: string;
@@ -54,35 +59,45 @@ const stockCheckResults = ref<{
   message: string;
 }[]>([]);
 
+const detailVisible = ref(false);
+const detailRow = ref<Requisition | null>(null);
+
+const salesDialogVisible = ref(false);
+const salesTargetId = ref('');
+const salesImportData = ref<ImportRequisitionData[]>([]);
+const compareRows = ref<DemandSalesCompareRow[]>([]);
+
 const filteredChannels = computed(() => {
-  if (!form.value.companyId) return channels.value;
-  return channelStore.getChannelsByCompany(form.value.companyId);
+  if (!form.value.companyId) return [];
+  return channelStore.getChannelsSortedByPriority(form.value.companyId);
 });
 
+/** 渠道可用仓库：强制同主体 */
 const filteredWarehouses = computed(() => {
-  if (!form.value.channelId) return [];
-  const channel = channelStore.getChannelById(form.value.channelId);
-  if (!channel) return [];
-  return warehouseStore.getWarehousesByIds(channel.warehouseIds);
+  if (!form.value.channelId || !form.value.companyId) return [];
+  return getChannelAllowedWarehouses(form.value.channelId).filter(
+    w => w.companyId === form.value.companyId,
+  );
+});
+
+const listRows = computed(() => {
+  return requisitionStore.requisitions.filter(r => {
+    if (filterWeek.value && r.weekStart !== filterWeek.value) return false;
+    if (filterCompanyId.value && r.companyId !== filterCompanyId.value) return false;
+    return true;
+  });
 });
 
 onMounted(() => {
-  channelStore.initChannels();
-  warehouseStore.initWarehouses();
-  productStore.initProducts();
-  stockStore.initStocks();
-  companyStore.initCompanies();
-  channels.value = channelStore.channels;
-  warehouses.value = warehouseStore.warehouses;
-  companies.value = companyStore.companies;
-  requisitions.value = requisitionStore.requisitions;
+  bootstrapStores();
 });
 
 const openDialog = () => {
   form.value = {
-    companyId: '',
+    companyId: filterCompanyId.value || '',
     channelId: '',
     warehouseIds: [],
+    weekStart: filterWeek.value || weekStartSaturday(),
   };
   importData.value = [];
   stockCheckResults.value = [];
@@ -90,88 +105,92 @@ const openDialog = () => {
 };
 
 const handleCompanyChange = () => {
-  // 选择主体后，清空渠道和仓库选择
   form.value.channelId = '';
   form.value.warehouseIds = [];
 };
 
 const handleChannelChange = () => {
-  // 选择渠道后，默认选中所有允许的仓库
   if (form.value.channelId) {
-    const channel = channelStore.getChannelById(form.value.channelId);
-    if (channel) {
-      form.value.warehouseIds = [...channel.warehouseIds];
-    }
+    form.value.warehouseIds = getChannelAllowedWarehouses(form.value.channelId).map(w => w.id);
   } else {
     form.value.warehouseIds = [];
   }
 };
 
-const handleImport = (event: Event) => {
-  const file = (event.target as HTMLInputElement).files?.[0];
-  if (!file) return;
+const parseExcelRows = (jsonData: any[]): ImportRequisitionData[] => {
+  const converted: ImportRequisitionData[] = [];
+  jsonData.forEach((item: any) => {
+    const productCode = cell(item, '商品编码', 'code');
+    const productName = cell(item, '商品名称', 'name');
+    let quantity = cellNum(item, '数量', 'quantity', '要货数量', '销量');
+    const remark = cell(item, '备注', 'remark');
+    if (!productCode) return;
 
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    const data = new Uint8Array(e.target?.result as ArrayBuffer);
-    const workbook = XLSX.read(data, { type: 'array' });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const jsonData = XLSX.utils.sheet_to_json(sheet);
-
-    const convertedData: ImportRequisitionData[] = [];
-    
-    jsonData.forEach((item: any) => {
-      const productCode = item['商品编码'] || item['code'] || '';
-      const productName = item['商品名称'] || item['name'] || '';
-      let quantity = Number(item['数量'] || item['quantity'] || 0);
-      const remark = item['备注'] || item['remark'] || '';
-
-      // 检查是否为组合商品，如果是，换算成基础商品
-      const product = productStore.getProductByCode(productCode);
-      if (product && product.combineProductCode && product.combineRatio > 0) {
-        quantity = quantity * product.combineRatio;
-        convertedData.push({
-          productCode: product.combineProductCode,
-          productName: productName + ` (组合商品，已换算为${product.combineProductCode})`,
-          quantity,
-          remark: remark || '组合商品换算',
-        });
-      } else {
-        convertedData.push({
-          productCode,
-          productName,
-          quantity,
-          remark,
-        });
-      }
-    });
-
-    importData.value = convertedData;
-    ElMessage.success('导入成功');
-    (event.target as HTMLInputElement).value = '';
-  };
-  reader.readAsArrayBuffer(file);
+    const product = productStore.getProductByCode(productCode);
+    if (product?.combineProductCode && product.combineRatio > 0) {
+      quantity = quantity * product.combineRatio;
+      converted.push({
+        productCode: product.combineProductCode,
+        productName: (productName || product.name) + ` (组合→${product.combineProductCode})`,
+        quantity,
+        remark: remark || '组合商品换算',
+      });
+    } else {
+      converted.push({
+        productCode,
+        productName: productName || product?.name || productCode,
+        quantity,
+        remark,
+      });
+    }
+  });
+  return converted;
 };
 
-// 检查库存可用性
+const handleImport = async (event: Event) => {
+  const rows = await readExcelFromEvent(event);
+  importData.value = parseExcelRows(rows);
+  stockCheckResults.value = [];
+  ElMessage.success(`已导入 ${importData.value.length} 行要货`);
+};
+
+const handleSalesImport = async (event: Event) => {
+  const rows = await readExcelFromEvent(event);
+  salesImportData.value = parseExcelRows(rows);
+  ElMessage.success(`已导入销货 ${salesImportData.value.length} 行`);
+};
+
+const downloadDemandTemplate = () => {
+  downloadTemplate(['商品编码', '商品名称', '数量', '备注'], '要货导入模板');
+};
+
+const exportList = () => {
+  const rows = requisitionStore.exportDemandFlat(filterWeek.value || undefined).map(r => ({
+    单号: r['单号'],
+    周起始: r['周起始'],
+    主体: getCompanyName(r['主体ID']),
+    渠道: getChannelName(r['渠道ID']),
+    状态: r['状态'],
+    商品编码: r['商品编码'],
+    商品名称: r['商品名称'],
+    要货数量: r['要货数量'],
+    备注: r['备注'],
+  }));
+  if (!rows.length) {
+    ElMessage.warning('当前周无要货数据可导出');
+    return;
+  }
+  exportRows(rows, `要货明细_${filterWeek.value || '全部'}`);
+  ElMessage.success('已导出');
+};
+
 const checkStock = () => {
-  if (!form.value.channelId) {
-    ElMessage.error('请先选择渠道');
+  if (!form.value.channelId || !form.value.warehouseIds.length) {
+    ElMessage.error('请先选择渠道和仓库');
     return [];
   }
-
-  const channel = channelStore.getChannelById(form.value.channelId);
-  if (!channel) {
-    ElMessage.error('渠道信息不存在');
-    return [];
-  }
-
-  // 获取更高优先级的渠道
-  const higherPriorityChannels = channelStore.getHigherPriorityChannels(form.value.channelId);
-  const higherPriorityChannelIds = higherPriorityChannels.map(c => c.id);
 
   const results: typeof stockCheckResults.value = [];
-
   importData.value.forEach(item => {
     const product = productStore.getProductByCode(item.productCode);
     if (!product) {
@@ -187,144 +206,159 @@ const checkStock = () => {
       return;
     }
 
-    // 获取可用库存（当前库存 + 在途库存）
-    const availableStock = stockStore.getAvailableStock(item.productCode);
-    
-    // 获取高优先级渠道的待审批需求
-    const higherPriorityDemand = requisitionStore.getPendingDemandByProductAndHigherPriority(
+    const availableStock = stockStore.getAvailableStockByWarehouses(
+      item.productCode,
+      form.value.warehouseIds,
+    );
+    const higherPriorityDemand = requisitionStore.getHigherPriorityPendingDemand(
       item.productCode,
       form.value.channelId,
-      higherPriorityChannelIds
-    ) - requisitionStore.getPendingDemandByProductAndChannel(item.productCode, form.value.channelId);
-
-    // 计算剩余库存
-    const remainingStock = availableStock - higherPriorityDemand;
-    
-    let status: 'ok' | 'low' | 'short' = 'ok';
-    let message = '';
-
-    if (remainingStock < item.quantity) {
-      // 缺货：扣除高优先级需求后，库存不足以满足当前渠道需求
-      status = 'short';
-      message = `缺货！可用库存 ${availableStock}，高优先级渠道已占 ${higherPriorityDemand}，当前需求 ${item.quantity}`;
-    } else if (availableStock < item.quantity + higherPriorityDemand + product.warningThreshold) {
-      // 库存不足：可用库存满足需求，但低于预警值
-      status = 'low';
-      message = `库存不足！可用库存 ${availableStock}，总需求 ${item.quantity + higherPriorityDemand}，预警阈值 ${product.warningThreshold}`;
-    } else {
-      // 正常
-      status = 'ok';
-      message = `库存充足`;
-    }
-
+      form.value.warehouseIds,
+    );
+    const checked = requisitionStore.checkStockAvailability(
+      item.productCode,
+      item.quantity,
+      product.warningThreshold,
+      availableStock,
+      higherPriorityDemand,
+    );
     results.push({
       productCode: item.productCode,
       productName: item.productName,
       demandQuantity: item.quantity,
       availableStock,
       higherPriorityDemand,
-      status,
-      message,
+      status: checked.status,
+      message: checked.message,
     });
   });
-
   return results;
 };
 
+const runStockCheck = () => {
+  if (!importData.value.length) {
+    ElMessage.warning('请先导入要货数据');
+    return;
+  }
+  stockCheckResults.value = checkStock();
+};
+
 const handleSubmit = async () => {
-  if (!form.value.companyId) {
-    ElMessage.error('请选择所属主体');
-    return;
-  }
+  if (!form.value.companyId) return ElMessage.error('请选择所属主体');
+  if (!form.value.channelId) return ElMessage.error('请选择渠道');
+  if (!form.value.warehouseIds.length) return ElMessage.error('请选择仓库');
+  if (!form.value.weekStart) return ElMessage.error('请选择周起始');
+  if (!importData.value.length) return ElMessage.error('请导入要货数据');
 
-  if (!form.value.channelId) {
-    ElMessage.error('请选择渠道');
-    return;
-  }
+  const scope = assertRequisitionScope({
+    companyId: form.value.companyId,
+    channelId: form.value.channelId,
+    warehouseIds: form.value.warehouseIds,
+  });
+  if (!scope.ok) return ElMessage.error(scope.message);
+  form.value.warehouseIds = scope.warehouseIds;
 
-  if (form.value.warehouseIds.length === 0) {
-    ElMessage.error('请选择仓库');
-    return;
-  }
-
-  if (importData.value.length === 0) {
-    ElMessage.error('请导入要货数据');
-    return;
-  }
-
-  // 检查库存
   const results = checkStock();
   stockCheckResults.value = results;
-
-  // 检查是否有缺货或库存不足的情况
   const shortItems = results.filter(r => r.status === 'short');
   const lowItems = results.filter(r => r.status === 'low');
 
   if (shortItems.length > 0) {
-    const shortMessage = shortItems.map(r => `${r.productName}: ${r.message}`).join('\n');
     await ElMessageBox.alert(
-      `以下商品缺货，无法提交要货单：\n\n${shortMessage}`,
-      '库存检查失败',
-      { type: 'error' }
+      shortItems.map(r => `${r.productName}: ${r.message}`).join('\n'),
+      '库存检查失败（按所选仓库 + 同主体高优先级占用）',
+      { type: 'error' },
     );
     return;
   }
 
   if (lowItems.length > 0) {
-    const lowMessage = lowItems.map(r => `${r.productName}: ${r.message}`).join('\n');
     try {
       await ElMessageBox.confirm(
-        `以下商品库存不足，是否继续提交？\n\n${lowMessage}`,
-        '库存警告',
-        {
-          confirmButtonText: '继续提交',
-          cancelButtonText: '取消',
-          type: 'warning',
-        }
+        lowItems.map(r => `${r.productName}: ${r.message}`).join('\n'),
+        '库存偏低，是否继续提交？',
+        { confirmButtonText: '继续提交', cancelButtonText: '取消', type: 'warning' },
       );
     } catch {
       return;
     }
   }
 
-  requisitionStore.addRequisition(form.value.channelId, form.value.warehouseIds, importData.value);
-  requisitions.value = requisitionStore.requisitions;
+  try {
+    requisitionStore.addRequisition(
+      form.value.companyId,
+      form.value.channelId,
+      form.value.warehouseIds,
+      importData.value,
+      form.value.weekStart,
+    );
+  } catch (e: any) {
+    return ElMessage.error(e?.message || '提交失败：主体/仓库不匹配');
+  }
   importDialogVisible.value = false;
-  ElMessage.success('提交成功');
+  ElMessage.success('要货单已提交');
 };
 
 const handleApprove = (id: string) => {
   requisitionStore.approveRequisition(id);
-  requisitions.value = requisitionStore.requisitions;
-  ElMessage.success('已审批通过');
+  ElMessage.success('已通过');
 };
 
 const handleReject = (id: string) => {
   requisitionStore.rejectRequisition(id);
-  requisitions.value = requisitionStore.requisitions;
   ElMessage.success('已拒绝');
 };
 
-const handleDelete = (id: string) => {
-  requisitionStore.deleteRequisition(id);
-  requisitions.value = requisitionStore.requisitions;
-  ElMessage.success('删除成功');
+const handleDelete = async (id: string) => {
+  try {
+    await ElMessageBox.confirm('确认删除该要货单？', '提示', { type: 'warning' });
+    requisitionStore.deleteRequisition(id);
+    ElMessage.success('已删除');
+  } catch { /* cancel */ }
 };
 
-const getChannelName = (id: string) => {
-  const channel = channelStore.getChannelById(id);
-  return channel ? channel.name : '';
+const openDetail = (row: Requisition) => {
+  detailRow.value = row;
+  detailVisible.value = true;
 };
 
-const getWarehouseNames = (ids: string[]) => {
-  return ids.map(id => {
-    const warehouse = warehouseStore.getWarehouseById(id);
-    return warehouse ? warehouse.name : '';
-  }).join(', ');
+const openSalesDialog = (row: Requisition) => {
+  salesTargetId.value = row.id;
+  salesImportData.value = (row.salesItems || []).map(i => ({
+    productCode: i.productCode,
+    productName: i.productName,
+    quantity: i.quantity,
+    remark: i.remark,
+  }));
+  compareRows.value = row.salesItems?.length
+    ? requisitionStore.compareDemandVsSales(row.id)
+    : [];
+  salesDialogVisible.value = true;
 };
+
+const saveSales = () => {
+  if (!salesImportData.value.length) {
+    ElMessage.error('请导入本周实际销货数据');
+    return;
+  }
+  requisitionStore.saveSalesItems(salesTargetId.value, salesImportData.value);
+  compareRows.value = requisitionStore.compareDemandVsSales(salesTargetId.value);
+  ElMessage.success('销货数据已保存，可查看虚报核对');
+};
+
+const refreshCompare = () => {
+  if (salesTargetId.value) {
+    compareRows.value = requisitionStore.compareDemandVsSales(salesTargetId.value);
+  }
+};
+
+const getChannelName = (id: string) => channelStore.getChannelById(id)?.name || id;
+const getCompanyName = (id: string) => companyStore.getCompanyById(id)?.name || id;
+const getWarehouseNames = (ids: string[]) =>
+  ids.map(id => warehouseStore.getWarehouseById(id)?.name || id).join('、');
 
 const getStatusTag = (status: string) => {
-  const tags: Record<string, { label: string; type: 'primary' | 'success' | 'warning' | 'info' | 'danger' }> = {
+  const tags: Record<string, { label: string; type: 'success' | 'warning' | 'danger' | 'info' }> = {
     pending: { label: '待审批', type: 'warning' },
     approved: { label: '已通过', type: 'success' },
     rejected: { label: '已拒绝', type: 'danger' },
@@ -332,199 +366,353 @@ const getStatusTag = (status: string) => {
   return tags[status] || { label: status, type: 'info' };
 };
 
-const formatDate = (dateStr: string) => {
-  return new Date(dateStr).toLocaleString('zh-CN');
+const compareStatusTag = (status: DemandSalesCompareRow['status']) => {
+  const map: Record<string, { label: string; type: 'success' | 'warning' | 'danger' | 'info' }> = {
+    accurate: { label: '正常', type: 'success' },
+    overclaim: { label: '疑似虚报', type: 'danger' },
+    underclaim: { label: '要货偏低', type: 'warning' },
+    no_sales: { label: '无销货', type: 'danger' },
+    no_demand: { label: '未要货有销', type: 'info' },
+  };
+  return map[status] || { label: status, type: 'info' };
 };
+
+const formatDate = (dateStr: string) => new Date(dateStr).toLocaleString('zh-CN');
+
+const goShortageAlert = () => {
+  router.push({
+    path: '/shortage-alert',
+    query: {
+      week: filterWeek.value,
+      companyId: filterCompanyId.value || undefined,
+    },
+  });
+};
+
+const triggerFile = (refEl: HTMLInputElement | null) => refEl?.click();
+const demandFileRef = ref<HTMLInputElement | null>(null);
+const salesFileRef = ref<HTMLInputElement | null>(null);
 </script>
 
 <template>
-  <div class="page-container">
-    <div class="page-header">
-      <h2>渠道要货管理</h2>
-      <div class="header-actions">
-        <ElButton type="primary" @click="openDialog()">新建要货单</ElButton>
-      </div>
+  <PageShell
+    title="渠道要货"
+    help="按主体分渠道/仓库 · 同主体内优先级占库存 · 审批后可录入本周实际销货做虚报核对\n推荐流程：1.库存导入（全量替换）→ 2.渠道要货 + 验库存 → 3.审批通过 → 4.录入本周实际销货 → 看是否虚报"
+  >
+    <template #toolbar>
+      <ElDatePicker
+        v-model="filterWeek"
+        type="date"
+        value-format="YYYY-MM-DD"
+        placeholder="周起始(周六)"
+        size="small"
+        style="width: 150px"
+        @change="(v: string) => { if (v) filterWeek = weekStartSaturday(v) }"
+      />
+      <ElSelect
+        v-model="filterCompanyId"
+        clearable
+        placeholder="全部主体"
+        size="small"
+        style="width: 140px"
+      >
+        <ElOption
+          v-for="c in companyStore.companies"
+          :key="c.id"
+          :label="c.name"
+          :value="c.id"
+        />
+      </ElSelect>
+      <ElButton type="primary" size="small" @click="openDialog">新建要货</ElButton>
+      <ElButton size="small" @click="goShortageAlert">缺货与预警</ElButton>
+      <ElButton size="small" @click="exportList">导出明细</ElButton>
+      <ElButton size="small" @click="downloadDemandTemplate">要货模板</ElButton>
+      <span class="week-label">当前周：{{ weekLabel(filterWeek) }}</span>
+    </template>
+
+    <div class="table-wrap">
+      <ElTable :data="listRows" border size="small" stripe class="erp-data-table" height="100%">
+        <ElTableColumn prop="id" label="单号" width="140" show-overflow-tooltip />
+        <ElTableColumn label="周次" width="110">
+          <template #default="{ row }">{{ row.weekStart }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="主体" width="110" show-overflow-tooltip>
+          <template #default="{ row }">{{ getCompanyName(row.companyId) }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="渠道" width="100">
+          <template #default="{ row }">
+            {{ getChannelName(row.channelId) }}
+            <ElTag size="small" type="info" style="margin-left: 4px">
+              P{{ channelStore.getChannelById(row.channelId)?.priority ?? '-' }}
+            </ElTag>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="仓库" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">{{ getWarehouseNames(row.warehouseIds) }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="SKU数" width="70" align="center">
+          <template #default="{ row }">{{ row.items.length }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="状态" width="90">
+          <template #default="{ row }">
+            <ElTag size="small" :type="getStatusTag(row.status).type">
+              {{ getStatusTag(row.status).label }}
+            </ElTag>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="销货" width="90">
+          <template #default="{ row }">
+            <ElTag v-if="row.salesItems?.length" size="small" type="success">已录入</ElTag>
+            <ElTag v-else size="small" type="info">未录</ElTag>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="创建时间" width="150">
+          <template #default="{ row }">{{ formatDate(row.createdAt) }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="操作" width="280" fixed="right">
+          <template #default="{ row }">
+            <ElButton link type="primary" size="small" @click="openDetail(row as Requisition)">明细</ElButton>
+            <ElButton
+              v-if="row.status === 'pending'"
+              link
+              type="success"
+              size="small"
+              @click="handleApprove(row.id)"
+            >通过</ElButton>
+            <ElButton
+              v-if="row.status === 'pending'"
+              link
+              type="danger"
+              size="small"
+              @click="handleReject(row.id)"
+            >拒绝</ElButton>
+            <ElButton
+              v-if="row.status === 'approved'"
+              link
+              type="warning"
+              size="small"
+              @click="openSalesDialog(row as Requisition)"
+            >录销货</ElButton>
+            <ElButton link type="info" size="small" @click="handleDelete(row.id)">删除</ElButton>
+          </template>
+        </ElTableColumn>
+      </ElTable>
     </div>
 
-    <ElTable :data="requisitions" border>
-      <ElTableColumn prop="id" label="单号" width="120" />
-      <ElTableColumn label="渠道" width="100">
-        <template #default="scope">
-          {{ getChannelName(scope.row.channelId) }}
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="仓库">
-        <template #default="scope">
-          {{ getWarehouseNames(scope.row.warehouseIds) }}
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="商品数量" width="100">
-        <template #default="scope">
-          {{ scope.row.items.length }}
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="状态" width="100">
-        <template #default="scope">
-          <ElTag :type="getStatusTag(scope.row.status).type">
-            {{ getStatusTag(scope.row.status).label }}
-          </ElTag>
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="创建时间" width="160">
-        <template #default="scope">
-          {{ formatDate(scope.row.createdAt) }}
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="操作">
-        <template #default="scope">
-          <ElButton size="small" v-if="scope.row.status === 'pending'" @click="handleApprove(scope.row.id)">通过</ElButton>
-          <ElButton size="small" v-if="scope.row.status === 'pending'" type="danger" @click="handleReject(scope.row.id)">拒绝</ElButton>
-          <ElButton size="small" type="danger" @click="handleDelete(scope.row.id)">删除</ElButton>
-        </template>
-      </ElTableColumn>
-    </ElTable>
-
-    <ElDialog v-model="importDialogVisible" title="新建要货单" width="900px">
-      <ElForm :model="form" label-width="100px">
-        <ElFormItem label="选择主体">
-          <ElSelect v-model="form.companyId" placeholder="请选择所属主体" @change="handleCompanyChange">
-            <ElOption
-              v-for="company in companies"
-              :key="company.id"
-              :label="company.name"
-              :value="company.id"
+    <!-- 新建要货 -->
+    <ElDialog v-model="importDialogVisible" title="新建要货单" width="960px" destroy-on-close>
+      <ElForm :model="form" label-width="88px" size="small">
+        <div class="form-grid">
+          <ElFormItem label="周起始" required>
+            <ElDatePicker
+              v-model="form.weekStart"
+              type="date"
+              value-format="YYYY-MM-DD"
+              style="width: 100%"
+              @change="(v: string) => { if (v) form.weekStart = weekStartSaturday(v) }"
             />
-          </ElSelect>
-        </ElFormItem>
-        <ElFormItem label="选择渠道">
-          <ElSelect v-model="form.channelId" placeholder="请选择渠道" @change="handleChannelChange">
-            <ElOption
-              v-for="channel in filteredChannels"
-              :key="channel.id"
-              :label="`${channel.name} (P${channel.priority})`"
-              :value="channel.id"
-            />
-          </ElSelect>
-        </ElFormItem>
-        <ElFormItem label="选择仓库">
-          <ElSelect v-model="form.warehouseIds" multiple placeholder="请选择仓库">
-            <ElOption
-              v-for="warehouse in filteredWarehouses"
-              :key="warehouse.id"
-              :label="warehouse.name"
-              :value="warehouse.id"
-            />
-          </ElSelect>
-          <p v-if="form.channelId && filteredWarehouses.length > 0" style="margin-top: 8px; color: #999; font-size: 12px;">
-            默认已选中所有允许的仓库
-          </p>
-        </ElFormItem>
+          </ElFormItem>
+          <ElFormItem label="主体" required>
+            <ElSelect v-model="form.companyId" placeholder="所属主体" @change="handleCompanyChange" style="width: 100%">
+              <ElOption v-for="c in companyStore.companies" :key="c.id" :label="c.name" :value="c.id" />
+            </ElSelect>
+          </ElFormItem>
+          <ElFormItem label="渠道" required>
+            <ElSelect v-model="form.channelId" placeholder="同主体渠道" @change="handleChannelChange" style="width: 100%">
+              <ElOption
+                v-for="ch in filteredChannels"
+                :key="ch.id"
+                :label="`${ch.name} (P${ch.priority})`"
+                :value="ch.id"
+              />
+            </ElSelect>
+          </ElFormItem>
+          <ElFormItem label="仓库" required>
+            <ElSelect v-model="form.warehouseIds" multiple placeholder="参与验库存的仓库" style="width: 100%">
+              <ElOption v-for="w in filteredWarehouses" :key="w.id" :label="w.name" :value="w.id" />
+            </ElSelect>
+          </ElFormItem>
+        </div>
       </ElForm>
 
-      <div class="import-section">
-        <div class="import-header">
-          <span>要货数据</span>
-          <input
-            type="file"
-            accept=".xlsx,.xls"
-            class="import-input"
-            @change="handleImport"
-          />
-          <ElButton type="primary" size="small" @click="(event: any) => event.target.previousElementSibling.click()">
-            导入Excel
-          </ElButton>
+      <div class="import-block">
+        <div class="import-block__head">
+          <span>要货明细</span>
+          <div>
+            <input ref="demandFileRef" type="file" accept=".xlsx,.xls" class="hidden-file" @change="handleImport" />
+            <ElButton size="small" @click="triggerFile(demandFileRef)">导入 Excel</ElButton>
+            <HelpTip inline title="Excel 列说明" content="列：商品编码、商品名称、数量、备注" />
+            <ElButton size="small" @click="downloadDemandTemplate">下载模板</ElButton>
+            <ElButton size="small" type="primary" :disabled="!importData.length" @click="runStockCheck">验库存</ElButton>
+            <HelpTip
+              inline
+              title="验库存说明"
+              content="验库存 = 所选仓库(库存+在途) − 同主体更高优先级、且仓库有交集的待审批要货"
+            />
+          </div>
         </div>
-
-        <ElTable :data="importData" border size="small" v-if="importData.length > 0">
-          <ElTableColumn prop="productCode" label="商品编码" />
-          <ElTableColumn prop="productName" label="商品名称" />
-          <ElTableColumn prop="quantity" label="数量" />
-          <ElTableColumn prop="remark" label="备注" />
+        <ElTable v-if="importData.length" :data="importData" border size="small" max-height="220">
+          <ElTableColumn prop="productCode" label="商品编码" width="120" />
+          <ElTableColumn prop="productName" label="商品名称" min-width="160" />
+          <ElTableColumn prop="quantity" label="数量" width="90" />
+          <ElTableColumn prop="remark" label="备注" min-width="120" />
         </ElTable>
-        <div v-else class="empty-tip">
-          请导入Excel文件，格式为：商品编码、商品名称、数量、备注
-        </div>
+        <div v-else class="empty-tip">请导入要货 Excel</div>
       </div>
 
-      <!-- 库存检查结果 -->
-      <div v-if="stockCheckResults.length > 0" class="stock-check-section">
-        <h4>库存检查结果</h4>
+      <div v-if="stockCheckResults.length" class="import-block">
+        <div class="import-block__head"><span>库存检查</span></div>
         <ElTable :data="stockCheckResults" border size="small" max-height="200">
-          <ElTableColumn prop="productCode" label="商品编码" />
-          <ElTableColumn prop="productName" label="商品名称" />
-          <ElTableColumn prop="demandQuantity" label="需求数量" />
-          <ElTableColumn prop="availableStock" label="可用库存" />
-          <ElTableColumn prop="higherPriorityDemand" label="高优先级占用" />
-          <ElTableColumn label="状态" width="120">
-            <template #default="scope">
-              <ElTag :type="scope.row.status === 'short' ? 'danger' : scope.row.status === 'low' ? 'warning' : 'success'">
-                {{ scope.row.status === 'short' ? '缺货' : scope.row.status === 'low' ? '库存不足' : '库存充足' }}
+          <ElTableColumn prop="productCode" label="编码" width="100" />
+          <ElTableColumn prop="productName" label="名称" min-width="120" />
+          <ElTableColumn prop="demandQuantity" label="需求" width="80" />
+          <ElTableColumn prop="availableStock" label="可用(所选仓)" width="110" />
+          <ElTableColumn prop="higherPriorityDemand" label="高优占用" width="90" />
+          <ElTableColumn label="状态" width="90">
+            <template #default="{ row }">
+              <ElTag size="small" :type="row.status === 'short' ? 'danger' : row.status === 'low' ? 'warning' : 'success'">
+                {{ row.status === 'short' ? '缺货' : row.status === 'low' ? '偏低' : '充足' }}
               </ElTag>
             </template>
           </ElTableColumn>
-          <ElTableColumn prop="message" label="说明" />
+          <ElTableColumn prop="message" label="说明" min-width="180" show-overflow-tooltip />
         </ElTable>
       </div>
 
       <template #footer>
-        <ElButton @click="importDialogVisible = false">取消</ElButton>
-        <ElButton type="primary" @click="handleSubmit">提交</ElButton>
+        <ElButton size="small" @click="importDialogVisible = false">取消</ElButton>
+        <ElButton size="small" type="primary" @click="handleSubmit">提交</ElButton>
       </template>
     </ElDialog>
-  </div>
+
+    <!-- 明细 -->
+    <ElDialog v-model="detailVisible" title="要货明细" width="720px" destroy-on-close>
+      <template v-if="detailRow">
+        <p class="detail-meta" style="margin-bottom: 8px">
+          {{ getCompanyName(detailRow.companyId) }} · {{ getChannelName(detailRow.channelId) }} ·
+          {{ weekLabel(detailRow.weekStart) }} · {{ getWarehouseNames(detailRow.warehouseIds) }}
+        </p>
+        <ElTable :data="detailRow.items" border size="small" max-height="400">
+          <ElTableColumn prop="productCode" label="编码" width="120" />
+          <ElTableColumn prop="productName" label="名称" min-width="160" />
+          <ElTableColumn prop="quantity" label="要货数量" width="100" />
+          <ElTableColumn prop="remark" label="备注" min-width="120" />
+        </ElTable>
+      </template>
+    </ElDialog>
+
+    <!-- 录销货 -->
+    <ElDialog v-model="salesDialogVisible" title="录入本周实际销货" width="960px" destroy-on-close>
+      <div class="import-block">
+        <div class="import-block__head">
+          <span>实际销货明细</span>
+          <div>
+            <input ref="salesFileRef" type="file" accept=".xlsx,.xls" class="hidden-file" @change="handleSalesImport" />
+            <ElButton size="small" @click="triggerFile(salesFileRef)">导入销货 Excel</ElButton>
+            <HelpTip
+              inline
+              title="销货说明"
+              content="用于核对渠道是否虚报要货。建议阈值：要货 ≥ 销货 × 1.3 标为「疑似虚报」。\nExcel 列同要货：商品编码、商品名称、数量、备注。"
+            />
+            <ElButton size="small" type="primary" @click="saveSales">保存并核对</ElButton>
+            <ElButton size="small" @click="refreshCompare">刷新核对</ElButton>
+          </div>
+        </div>
+        <ElTable v-if="salesImportData.length" :data="salesImportData" border size="small" max-height="200">
+          <ElTableColumn prop="productCode" label="编码" width="120" />
+          <ElTableColumn prop="productName" label="名称" min-width="140" />
+          <ElTableColumn prop="quantity" label="销货数量" width="100" />
+          <ElTableColumn prop="remark" label="备注" />
+        </ElTable>
+        <div v-else class="empty-tip">请导入本周实际销货</div>
+      </div>
+
+      <div v-if="compareRows.length" class="import-block">
+        <div class="import-block__head"><span>要货 vs 销货</span></div>
+        <ElTable :data="compareRows" border size="small" max-height="280">
+          <ElTableColumn prop="productCode" label="编码" width="100" />
+          <ElTableColumn prop="productName" label="名称" min-width="120" />
+          <ElTableColumn prop="demandQty" label="要货" width="80" />
+          <ElTableColumn prop="salesQty" label="销货" width="80" />
+          <ElTableColumn prop="overClaim" label="虚报量" width="80">
+            <template #default="{ row }">
+              <span :class="{ danger: row.overClaim > 0 }">{{ row.overClaim }}</span>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="要货/销货" width="100">
+            <template #default="{ row }">
+              {{ row.ratio === Infinity ? '∞' : row.ratio }}
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="结论" width="110">
+            <template #default="{ row }">
+              <ElTag size="small" :type="compareStatusTag(row.status).type">
+                {{ compareStatusTag(row.status).label }}
+              </ElTag>
+            </template>
+          </ElTableColumn>
+        </ElTable>
+      </div>
+    </ElDialog>
+  </PageShell>
 </template>
 
 <style scoped>
-.page-container {
-  padding: 20px;
+.table-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 0 0;
+  overflow: hidden;
 }
 
-.page-header {
+.week-label {
+  font-size: 13px;
+  color: var(--erp-text-muted);
+}
+
+.detail-meta {
+  font-size: 13px;
+  color: var(--erp-text-muted);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 12px;
+}
+
+.import-block {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--erp-border);
+}
+
+.import-block__head {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
-}
-
-.header-actions {
-  display: flex;
-  gap: 10px;
-}
-
-.import-section {
-  margin-top: 20px;
-}
-
-.import-header {
-  display: flex;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 15px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
 }
 
-.import-input {
+.hidden-file {
   display: none;
 }
 
 .empty-tip {
-  padding: 40px;
+  padding: 28px;
   text-align: center;
-  color: #999;
+  color: var(--erp-text-muted);
+  font-size: 13px;
+  background: #fafbfc;
+  border-radius: 8px;
 }
 
-.stock-check-section {
-  margin-top: 20px;
-  padding-top: 15px;
-  border-top: 1px solid #eee;
-}
-
-.stock-check-section h4 {
-  margin-bottom: 10px;
-  font-size: 14px;
-  color: #666;
-}
-
-:deep(.el-select) {
-  width: 100%;
+.danger {
+  color: #f56c6c;
+  font-weight: 600;
 }
 </style>

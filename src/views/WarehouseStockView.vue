@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue';
+import { ref, onMounted, computed } from 'vue';
+import { storeToRefs } from 'pinia';
 import {
   ElTable,
   ElTableColumn,
@@ -13,22 +14,28 @@ import {
   ElInputNumber,
   ElDatePicker,
   ElMessage,
+  ElMessageBox,
   ElTag,
 } from 'element-plus';
-import * as XLSX from 'xlsx';
+import PageShell from '../components/PageShell.vue';
+import HelpTip from '../components/HelpTip.vue';
 import { useWarehouseStockStore } from '../stores/warehouseStock';
 import { useWarehouseStore } from '../stores/warehouse';
 import { useProductStore } from '../stores/product';
-import type { WarehouseStock, CustomFieldConfig } from '../types';
+import { useCompanyStore } from '../stores/company';
+import { bootstrapStores } from '../stores/bootstrap';
+import type { WarehouseStock, CustomFieldConfig, FieldType, ImportWarehouseStockData } from '../types';
+import { weekStartSaturday, weekLabel } from '../utils/week';
+import { readExcelFromEvent, exportRows, downloadTemplate, cell, cellNum } from '../utils/excel';
 
 const stockStore = useWarehouseStockStore();
 const warehouseStore = useWarehouseStore();
 const productStore = useProductStore();
+const companyStore = useCompanyStore();
 
-const stocks = ref<WarehouseStock[]>([]);
-const warehouses = ref<any[]>([]);
-const products = ref<any[]>([]);
-const customFields = ref<CustomFieldConfig[]>([]);
+const { stocks, customFields } = storeToRefs(stockStore);
+const { warehouses } = storeToRefs(warehouseStore);
+const { products } = storeToRefs(productStore);
 
 const dialogVisible = ref(false);
 const isEdit = ref(false);
@@ -42,15 +49,54 @@ const form = ref({
 const editId = ref('');
 
 const searchWarehouseId = ref('');
+const searchCompanyId = ref('');
+const importWeekStart = ref(weekStartSaturday());
 
 const importInputRef = ref<HTMLInputElement | null>(null);
+const isReplaceMode = ref(false);
+
+// 字段管理对话框
+const fieldDialogVisible = ref(false);
+const fieldForm = ref({
+  label: '',
+  type: 'text' as FieldType,
+});
+const editingFieldKey = ref('');
 
 const triggerImport = () => {
+  isReplaceMode.value = false;
   importInputRef.value?.click();
 };
 
+const triggerReplaceImport = async () => {
+  try {
+    await ElMessageBox.confirm(
+      `确认用 Excel「全量替换」本周库存？\n\n周次：${weekLabel(importWeekStart.value)}\n\n旧数据会先自动快照备份，再清空并写入新数据。\n未出现在 Excel 中的 SKU 库存将丢失。\n\n（本系统未对接万里牛，建议每周固定全量替换一次）`,
+      '每周库存导入',
+      {
+        confirmButtonText: '确认全量替换',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    );
+    isReplaceMode.value = true;
+    importInputRef.value?.click();
+  } catch {
+    /* cancel */
+  }
+};
+
+const filteredWarehouses = computed(() => {
+  if (!searchCompanyId.value) return warehouses.value;
+  return warehouseStore.getWarehousesByCompany(searchCompanyId.value);
+});
+
 const filteredStocks = computed(() => {
   let result = stocks.value;
+  if (searchCompanyId.value) {
+    const ids = new Set(warehouseStore.getWarehousesByCompany(searchCompanyId.value).map(w => w.id));
+    result = result.filter(s => ids.has(s.warehouseId));
+  }
   if (searchWarehouseId.value) {
     result = result.filter(s => s.warehouseId === searchWarehouseId.value);
   }
@@ -58,19 +104,8 @@ const filteredStocks = computed(() => {
 });
 
 onMounted(() => {
-  warehouseStore.initWarehouses();
-  productStore.initProducts();
-  stockStore.initStocks();
-  warehouses.value = warehouseStore.warehouses;
-  products.value = productStore.products;
-  stocks.value = stockStore.stocks;
-  customFields.value = stockStore.customFields;
+  bootstrapStores();
 });
-
-// 监听自定义字段变化
-watch(() => stockStore.customFields, (newFields) => {
-  customFields.value = newFields;
-}, { deep: true });
 
 const openDialog = (stock?: WarehouseStock) => {
   if (stock) {
@@ -125,55 +160,51 @@ const handleSubmit = () => {
     form.value.inTransitStock,
     Object.keys(form.value.customFields).length > 0 ? form.value.customFields : undefined
   );
-  stocks.value = stockStore.stocks;
   dialogVisible.value = false;
   ElMessage.success('保存成功');
 };
 
 const handleDelete = (id: string) => {
   stockStore.deleteStock(id);
-  stocks.value = stockStore.stocks;
   ElMessage.success('删除成功');
 };
 
-const handleImport = (event: Event) => {
-  const file = (event.target as HTMLInputElement).files?.[0];
-  if (!file) return;
+const STOCK_HEADERS = ['仓库编码', '商品编码', '商品名称', '库存', '在途库存'] as const;
 
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    const data = new Uint8Array(e.target?.result as ArrayBuffer);
-    const workbook = XLSX.read(data, { type: 'array' });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const jsonData = XLSX.utils.sheet_to_json(sheet);
+const handleImport = async (event: Event) => {
+  const jsonData = await readExcelFromEvent(event);
+  if (!jsonData.length) return;
 
-    // 支持自定义字段的导入，保留所有原始字段
-    const importData = jsonData.map((item: any) => {
-      const knownFields = ['warehouseCode', 'productCode', 'productName', 'stock', 'inTransitStock'];
-      const result: any = {
-        warehouseCode: item['仓库编码'] || item['warehouseCode'] || '',
-        productCode: item['商品编码'] || item['productCode'] || '',
-        productName: item['商品名称'] || item['productName'] || '',
-        stock: Number(item['库存'] || item['stock'] || 0),
-        inTransitStock: Number(item['在途库存'] || item['inTransitStock'] || 0),
-      };
-      
-      // 添加自定义字段
-      for (const key in item) {
-        if (!knownFields.includes(key) && !['仓库编码', '商品编码', '商品名称', '库存', '在途库存'].includes(key)) {
-          result[key] = item[key];
-        }
+  const knownLabels = new Set<string>([...STOCK_HEADERS]);
+  const importData: ImportWarehouseStockData[] = jsonData.map(item => {
+    const result: ImportWarehouseStockData = {
+      warehouseCode: cell(item, '仓库编码', 'warehouseCode'),
+      productCode: cell(item, '商品编码', 'productCode'),
+      productName: cell(item, '商品名称', 'productName'),
+      stock: cellNum(item, '库存', 'stock'),
+      inTransitStock: cellNum(item, '在途库存', 'inTransitStock'),
+    };
+
+    for (const key in item) {
+      if (!knownLabels.has(key) && !['warehouseCode', 'productCode', 'productName', 'stock', 'inTransitStock'].includes(key)) {
+        result[key] = item[key];
       }
-      
-      return result;
-    });
+    }
 
-    stockStore.importStocks(importData);
-    stocks.value = stockStore.stocks;
-    ElMessage.success('导入成功');
-    (event.target as HTMLInputElement).value = '';
-  };
-  reader.readAsArrayBuffer(file);
+    return result;
+  });
+
+  const week = weekStartSaturday(importWeekStart.value);
+  const description = isReplaceMode.value
+    ? `全量替换前备份 · ${week}`
+    : `增量导入前备份 · ${week}`;
+
+  const imported = stockStore.importStocks(importData, isReplaceMode.value, description, week);
+  ElMessage.success(
+    isReplaceMode.value
+      ? `全量替换完成（${imported} 行），已快照备份 · ${week}`
+      : `增量导入完成（${imported} 行）· ${week}`,
+  );
 };
 
 const getWarehouseName = (id: string) => {
@@ -220,42 +251,135 @@ const getTotalInTransitStock = (productCode: string) => {
 const getCustomFieldValue = (stock: WarehouseStock, fieldKey: string) => {
   return stock.customFields?.[fieldKey] || '';
 };
+
+const buildStockExportRow = (stock: WarehouseStock) => {
+  const warehouse = warehouseStore.getWarehouseById(stock.warehouseId);
+  const row: Record<string, string | number> = {
+    仓库编码: warehouse?.code || '',
+    商品编码: stock.productCode,
+    商品名称: getProductName(stock.productCode),
+    库存: stock.stock,
+    在途库存: stock.inTransitStock,
+  };
+  customFields.value.forEach(field => {
+    row[field.label] = getCustomFieldValue(stock, field.key);
+  });
+  return row;
+};
+
+const handleExport = () => {
+  const rows = filteredStocks.value.map(buildStockExportRow);
+  exportRows(rows, '库存');
+  ElMessage.success(`已导出 ${rows.length} 条`);
+};
+
+const handleTemplate = () => {
+  const headers = [...STOCK_HEADERS, ...customFields.value.map(f => f.label)];
+  downloadTemplate(headers, '库存导入模板');
+};
+
+// 字段管理相关方法
+const openFieldDialog = (field?: CustomFieldConfig) => {
+  if (field) {
+    editingFieldKey.value = field.key;
+    fieldForm.value = {
+      label: field.label,
+      type: field.type,
+    };
+  } else {
+    editingFieldKey.value = '';
+    fieldForm.value = {
+      label: '',
+      type: 'text',
+    };
+  }
+  fieldDialogVisible.value = true;
+};
+
+const handleFieldSubmit = () => {
+  if (!fieldForm.value.label) {
+    ElMessage.error('请输入字段名称');
+    return;
+  }
+
+  if (editingFieldKey.value) {
+    stockStore.updateCustomField(editingFieldKey.value, fieldForm.value);
+    ElMessage.success('字段修改成功');
+  } else {
+    stockStore.addCustomField(fieldForm.value);
+    ElMessage.success('字段添加成功');
+  }
+
+  fieldDialogVisible.value = false;
+};
+
+const handleFieldDelete = (key: string) => {
+  stockStore.removeCustomField(key);
+  ElMessage.success('字段删除成功');
+};
 </script>
 
 <template>
-  <div class="page-container">
-    <div class="page-header">
-      <h2>库存状况</h2>
-      <div class="header-actions">
-        <input
-          type="file"
-          accept=".xlsx,.xls"
-          class="import-input"
-          @change="handleImport"
-          ref="importInputRef"
+  <PageShell
+    title="库存导入"
+    help="未对接万里牛：每周从线下/ERP 导出库存 Excel，建议「全量替换」并自动快照，再去做渠道要货。\n推荐流程：选周次 → 全量替换导入 → 去「渠道要货」提报 → 周末录实际销货核对\nExcel 列：仓库编码、商品编码、商品名称、库存、在途库存"
+  >
+    <template #toolbar>
+      <ElDatePicker
+        v-model="importWeekStart"
+        type="date"
+        value-format="YYYY-MM-DD"
+        placeholder="导入归属周"
+        size="small"
+        style="width: 150px"
+        @change="(v: string) => { if (v) importWeekStart = weekStartSaturday(v) }"
+      />
+      <ElSelect
+        v-model="searchCompanyId"
+        clearable
+        placeholder="主体"
+        size="small"
+        style="width: 130px"
+        @change="searchWarehouseId = ''"
+      >
+        <ElOption
+          v-for="c in companyStore.companies"
+          :key="c.id"
+          :label="c.name"
+          :value="c.id"
         />
-        <ElButton @click="triggerImport()">导入库存</ElButton>
-        <ElButton type="primary" @click="openDialog()">添加库存</ElButton>
-      </div>
-    </div>
+      </ElSelect>
+      <ElSelect v-model="searchWarehouseId" clearable placeholder="仓库" size="small" style="width: 130px">
+        <ElOption
+          v-for="warehouse in filteredWarehouses"
+          :key="warehouse.id"
+          :label="warehouse.name"
+          :value="warehouse.id"
+        />
+      </ElSelect>
+      <input
+        type="file"
+        accept=".xlsx,.xls"
+        class="import-input"
+        @change="handleImport"
+        ref="importInputRef"
+      />
+      <ElButton size="small" type="primary" @click="triggerReplaceImport()">本周全量替换</ElButton>
+      <HelpTip
+        inline
+        title="全量替换说明"
+        content="用 Excel 全量替换本周库存。\n旧数据会先自动快照备份，再清空并写入新数据。\n未出现在 Excel 中的 SKU 库存将丢失。\n建议每周固定全量替换一次。"
+      />
+      <ElButton size="small" @click="triggerImport()">增量导入</ElButton>
+      <ElButton size="small" @click="handleExport">导出</ElButton>
+      <ElButton size="small" @click="handleTemplate">下载模板</ElButton>
+      <ElButton size="small" @click="openFieldDialog()">字段管理</ElButton>
+      <ElButton size="small" @click="openDialog()">手工添加</ElButton>
+    </template>
 
-    <!-- 搜索筛选 -->
-    <div class="search-section">
-      <ElForm inline>
-        <ElFormItem label="仓库">
-          <ElSelect v-model="searchWarehouseId" placeholder="请选择仓库" clearable>
-            <ElOption
-              v-for="warehouse in warehouses"
-              :key="warehouse.id"
-              :label="warehouse.name"
-              :value="warehouse.id"
-            />
-          </ElSelect>
-        </ElFormItem>
-      </ElForm>
-    </div>
+    <div class="table-wrap">
 
-    <ElTable :data="filteredStocks" border>
+    <ElTable :data="filteredStocks" border size="small" stripe class="erp-data-table" height="100%">
       <ElTableColumn label="仓库编码" width="100">
         <template #default="scope">
           {{ getWarehouseName((scope.row as WarehouseStock).warehouseId) }}
@@ -321,18 +445,19 @@ const getCustomFieldValue = (stock: WarehouseStock, fieldKey: string) => {
           {{ getTotalInTransitStock((scope.row as WarehouseStock).productCode) }}
         </template>
       </ElTableColumn>
-      <ElTableColumn label="操作">
+      <ElTableColumn label="操作" width="120" fixed="right">
         <template #default="scope">
-          <ElButton size="small" @click="openDialog(scope.row as WarehouseStock)">编辑</ElButton>
-          <ElButton size="small" type="danger" @click="handleDelete((scope.row as WarehouseStock).id)">删除</ElButton>
+          <ElButton link type="primary" size="small" @click="openDialog(scope.row as WarehouseStock)">编辑</ElButton>
+          <ElButton link type="danger" size="small" @click="handleDelete((scope.row as WarehouseStock).id)">删除</ElButton>
         </template>
       </ElTableColumn>
     </ElTable>
+    </div>
 
-    <ElDialog v-model="dialogVisible" :title="isEdit ? '编辑库存' : '添加库存'" width="600px">
-      <ElForm :model="form" label-width="120px">
+    <ElDialog v-model="dialogVisible" :title="isEdit ? '编辑库存' : '添加库存'" width="560px">
+      <ElForm :model="form" label-width="100px" size="small">
         <ElFormItem label="选择仓库">
-          <ElSelect v-model="form.warehouseId" placeholder="请选择仓库">
+          <ElSelect v-model="form.warehouseId" placeholder="请选择仓库" style="width: 100%">
             <ElOption
               v-for="warehouse in warehouses"
               :key="warehouse.id"
@@ -342,7 +467,7 @@ const getCustomFieldValue = (stock: WarehouseStock, fieldKey: string) => {
           </ElSelect>
         </ElFormItem>
         <ElFormItem label="选择商品">
-          <ElSelect v-model="form.productCode" placeholder="请选择商品">
+          <ElSelect v-model="form.productCode" placeholder="请选择商品" filterable style="width: 100%">
             <ElOption
               v-for="product in products"
               :key="product.code"
@@ -352,46 +477,73 @@ const getCustomFieldValue = (stock: WarehouseStock, fieldKey: string) => {
           </ElSelect>
         </ElFormItem>
         <ElFormItem label="库存数量">
-          <ElInputNumber v-model="form.stock" :min="0" />
+          <ElInputNumber v-model="form.stock" :min="0" style="width: 100%" />
         </ElFormItem>
         <ElFormItem label="在途库存">
-          <ElInputNumber v-model="form.inTransitStock" :min="0" />
-          <span style="margin-left: 8px; color: #999; font-size: 12px;">即将到货的数量</span>
+          <ElInputNumber v-model="form.inTransitStock" :min="0" style="width: 100%" />
         </ElFormItem>
-        <!-- 动态自定义字段表单 -->
         <ElFormItem v-for="field in customFields" :key="field.key" :label="field.label">
           <ElInput v-if="field.type === 'text'" v-model="form.customFields[field.key]" />
           <ElInputNumber v-else-if="field.type === 'number'" v-model="form.customFields[field.key]" :min="0" />
-          <ElDatePicker v-else-if="field.type === 'date'" v-model="form.customFields[field.key]" type="date" />
+          <ElDatePicker v-else-if="field.type === 'date'" v-model="form.customFields[field.key]" type="date" style="width: 100%" />
         </ElFormItem>
       </ElForm>
       <template #footer>
-        <ElButton @click="dialogVisible = false">取消</ElButton>
-        <ElButton type="primary" @click="handleSubmit">确定</ElButton>
+        <ElButton size="small" @click="dialogVisible = false">取消</ElButton>
+        <ElButton size="small" type="primary" @click="handleSubmit">确定</ElButton>
       </template>
     </ElDialog>
-  </div>
+
+    <ElDialog v-model="fieldDialogVisible" title="字段管理" width="520px">
+      <div v-if="editingFieldKey || !customFields.length" style="margin-bottom: 16px">
+        <ElForm :model="fieldForm" label-width="88px" size="small">
+          <ElFormItem label="字段名称">
+            <ElInput v-model="fieldForm.label" placeholder="如：批次号、生产日期" />
+          </ElFormItem>
+          <ElFormItem label="字段类型">
+            <ElSelect v-model="fieldForm.type" placeholder="请选择类型" style="width: 100%">
+              <ElOption label="文本" value="text" />
+              <ElOption label="数字" value="number" />
+              <ElOption label="日期" value="date" />
+            </ElSelect>
+          </ElFormItem>
+        </ElForm>
+      </div>
+      <div v-else>
+        <ElTable :data="customFields" border size="small">
+          <ElTableColumn prop="label" label="字段名称" />
+          <ElTableColumn prop="type" label="字段类型">
+            <template #default="scope">
+              {{ (scope.row as CustomFieldConfig).type === 'text' ? '文本' : (scope.row as CustomFieldConfig).type === 'number' ? '数字' : '日期' }}
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="操作" width="140">
+            <template #default="scope">
+              <ElButton link type="primary" size="small" @click="openFieldDialog(scope.row as CustomFieldConfig)">编辑</ElButton>
+              <ElButton link type="danger" size="small" @click="handleFieldDelete((scope.row as CustomFieldConfig).key)">删除</ElButton>
+            </template>
+          </ElTableColumn>
+        </ElTable>
+      </div>
+      <template #footer>
+        <ElButton v-if="editingFieldKey" size="small" @click="editingFieldKey = ''; fieldForm.label = ''; fieldForm.type = 'text'">返回列表</ElButton>
+        <ElButton v-if="!editingFieldKey" size="small" type="primary" @click="openFieldDialog()">添加字段</ElButton>
+        <ElButton v-if="editingFieldKey" size="small" type="primary" @click="handleFieldSubmit">保存</ElButton>
+        <ElButton v-if="!editingFieldKey" size="small" @click="fieldDialogVisible = false">关闭</ElButton>
+      </template>
+    </ElDialog>
+  </PageShell>
 </template>
 
 <style scoped>
-.page-container {
-  padding: 20px;
-}
-
-.page-header {
+.table-wrap {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-
-.header-actions {
-  display: flex;
+  flex-direction: column;
   gap: 10px;
-}
-
-.search-section {
-  margin-bottom: 15px;
+  padding: 12px 16px 0;
+  overflow: hidden;
 }
 
 .import-input {
@@ -400,15 +552,6 @@ const getCustomFieldValue = (stock: WarehouseStock, fieldKey: string) => {
 
 .stock-warning {
   color: #f56c6c;
-  font-weight: bold;
-}
-
-:deep(.el-select) {
-  width: 200px;
-}
-
-:deep(.el-input-number),
-:deep(.el-input) {
-  width: 100%;
+  font-weight: 600;
 }
 </style>

@@ -7,6 +7,8 @@ export const useProductStore = defineStore('product', () => {
 
   // 模拟初始数据
   const initProducts = () => {
+    // 如果已有数据，不再初始化
+    if (products.value.length > 0) return;
     products.value = [
       { id: '1', code: 'P001', name: '矿泉水500ml', spec: '500ml', bottleUnit: '瓶', boxUnit: '箱', bottlesPerBox: 24, stock: 500, warningThreshold: 100, isCombined: false, combineProductCode: '', combineRatio: 0 },
       { id: '2', code: 'P002', name: '可乐330ml', spec: '330ml', bottleUnit: '瓶', boxUnit: '箱', bottlesPerBox: 24, stock: 50, warningThreshold: 100, isCombined: false, combineProductCode: '', combineRatio: 0 },
@@ -79,6 +81,16 @@ export const useProductStore = defineStore('product', () => {
     return products.value.find(p => p.code === code);
   };
 
+  const upsertByCode = (data: Omit<Product, 'id'>) => {
+    const existing = getProductByCode(data.code);
+    if (existing) {
+      updateProduct(existing.id, data);
+      return existing.id;
+    }
+    addProduct(data);
+    return products.value[products.value.length - 1]?.id;
+  };
+
   return {
     products,
     warningProducts,
@@ -91,5 +103,8 @@ export const useProductStore = defineStore('product', () => {
     updateProduct,
     deleteProduct,
     getProductByCode,
+    upsertByCode,
   };
+}, {
+  persist: true,
 });

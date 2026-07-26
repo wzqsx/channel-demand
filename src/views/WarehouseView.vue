@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
+import { storeToRefs } from 'pinia';
 import {
   ElTable,
   ElTableColumn,
@@ -12,15 +13,18 @@ import {
   ElOption,
   ElMessage,
 } from 'element-plus';
-import * as XLSX from 'xlsx';
+import PageShell from '../components/PageShell.vue';
 import { useWarehouseStore } from '../stores/warehouse';
 import { useCompanyStore } from '../stores/company';
+import { bootstrapStores } from '../stores/bootstrap';
 import type { Warehouse } from '../types';
+import { readExcelFromEvent, exportRows, downloadTemplate, cell } from '../utils/excel';
 
 const store = useWarehouseStore();
 const companyStore = useCompanyStore();
-const warehouses = ref<Warehouse[]>([]);
-const companies = ref<any[]>([]);
+const { warehouses } = storeToRefs(store);
+const { companies } = storeToRefs(companyStore);
+
 const dialogVisible = ref(false);
 const isEdit = ref(false);
 const form = ref({
@@ -29,17 +33,10 @@ const form = ref({
   companyId: '',
 });
 const editId = ref('');
-const importInputRef = ref<HTMLInputElement | null>(null);
-
-const triggerImport = () => {
-  importInputRef.value?.click();
-};
+const importRef = ref<HTMLInputElement | null>(null);
 
 onMounted(() => {
-  store.initWarehouses();
-  companyStore.initCompanies();
-  warehouses.value = store.warehouses;
-  companies.value = companyStore.companies;
+  bootstrapStores();
 });
 
 const openDialog = (warehouse?: Warehouse) => {
@@ -68,9 +65,12 @@ const handleSubmit = () => {
     ElMessage.error('请填写仓库编码和名称');
     return;
   }
-
   if (!form.value.companyId) {
     ElMessage.error('请选择所属主体');
+    return;
+  }
+  if (!companyStore.getCompanyById(form.value.companyId)) {
+    ElMessage.error('所属主体不存在，请重新选择');
     return;
   }
 
@@ -81,92 +81,91 @@ const handleSubmit = () => {
     store.addWarehouse(form.value);
     ElMessage.success('添加成功');
   }
-
-  warehouses.value = store.warehouses;
   dialogVisible.value = false;
 };
 
 const handleDelete = (id: string) => {
   store.deleteWarehouse(id);
-  warehouses.value = store.warehouses;
   ElMessage.success('删除成功');
 };
 
-const handleImport = (event: Event) => {
-  const file = (event.target as HTMLInputElement).files?.[0];
-  if (!file) return;
+const getCompanyCode = (id: string) => companyStore.getCompanyById(id)?.code || '';
 
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    const data = new Uint8Array(e.target?.result as ArrayBuffer);
-    const workbook = XLSX.read(data, { type: 'array' });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const jsonData = XLSX.utils.sheet_to_json(sheet);
-
-    jsonData.forEach((item: any) => {
-      // 通过公司编码查找公司ID
-      const companyCode = item['公司编码'] || item['companyCode'] || item['所属主体'] || '';
-      const company = companyStore.companies.find((c: any) => c.code === companyCode);
-      const companyId = company?.id || '';
-
-      const warehouse: Omit<Warehouse, 'id'> = {
-        code: item['仓库编码'] || item['code'] || '',
-        name: item['仓库名称'] || item['name'] || '',
-        companyId,
-      };
-      if (warehouse.code && warehouse.name) {
-        store.addWarehouse(warehouse);
-      }
-    });
-
-    warehouses.value = store.warehouses;
-    ElMessage.success('导入成功');
-    (event.target as HTMLInputElement).value = '';
-  };
-  reader.readAsArrayBuffer(file);
+const handleExport = () => {
+  exportRows(
+    warehouses.value.map(w => ({
+      仓库编码: w.code,
+      仓库名称: w.name,
+      公司编码: getCompanyCode(w.companyId),
+    })),
+    '仓库',
+  );
+  ElMessage.success('已导出');
 };
 
-const getCompanyName = (id: string) => {
-  const company = companyStore.getCompanyById(id);
-  return company ? company.name : '';
+const handleTemplate = () => {
+  downloadTemplate(['仓库编码', '仓库名称', '公司编码'], '仓库导入模板');
 };
+
+const handleImport = async (event: Event) => {
+  const rows = await readExcelFromEvent(event);
+  let n = 0;
+  let skipped = 0;
+  rows.forEach(row => {
+    const code = cell(row, '仓库编码', 'code');
+    const name = cell(row, '仓库名称', 'name');
+    const companyCode = cell(row, '公司编码', 'companyCode', '所属主体');
+    if (!code || !name) return;
+
+    const company = companyStore.getCompanyByCode(companyCode);
+    if (!company) {
+      skipped += 1;
+      return;
+    }
+
+    store.upsertByCode({ code, name, companyId: company.id });
+    n += 1;
+  });
+  ElMessage.success(
+    skipped
+      ? `导入完成 ${n} 条，跳过 ${skipped} 条（主体编码不存在）`
+      : `导入完成 ${n} 条（按编码覆盖）`,
+  );
+};
+
+const getCompanyName = (id: string) => companyStore.getCompanyById(id)?.name || '';
 </script>
 
 <template>
-  <div class="page-container">
-    <div class="page-header">
-      <h2>仓库管理</h2>
-      <div class="header-actions">
-        <input
-          type="file"
-          accept=".xlsx,.xls"
-          class="import-input"
-          @change="handleImport"
-          ref="importInputRef"
-        />
-        <ElButton @click="triggerImport()">导入仓库</ElButton>
-        <ElButton type="primary" @click="openDialog()">添加仓库</ElButton>
-      </div>
+  <PageShell title="仓库管理" help="按主体维护仓库编码与名称。主体列表与「公司主体」实时同步。">
+    <template #toolbar>
+      <input ref="importRef" type="file" accept=".xlsx,.xls" class="hidden-file" @change="handleImport" />
+      <ElButton type="primary" size="small" @click="openDialog()">添加仓库</ElButton>
+      <ElButton size="small" @click="importRef?.click()">导入</ElButton>
+      <ElButton size="small" @click="handleExport">导出</ElButton>
+      <ElButton size="small" @click="handleTemplate">下载模板</ElButton>
+    </template>
+
+    <div class="table-wrap">
+      <ElTable :data="warehouses" border size="small" stripe class="erp-data-table" height="100%">
+        <ElTableColumn prop="code" label="仓库编码" width="140" />
+        <ElTableColumn prop="name" label="仓库名称" min-width="200" />
+        <ElTableColumn label="所属主体" width="140">
+          <template #default="{ row }">
+            {{ getCompanyName((row as Warehouse).companyId) }}
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="操作" width="140" fixed="right">
+          <template #default="{ row }">
+            <ElButton link type="primary" size="small" @click="openDialog(row as Warehouse)">编辑</ElButton>
+            <ElButton link type="danger" size="small" @click="handleDelete((row as Warehouse).id)">删除</ElButton>
+          </template>
+        </ElTableColumn>
+      </ElTable>
     </div>
 
-    <ElTable :data="warehouses" border>
-      <ElTableColumn prop="code" label="仓库编码" />
-      <ElTableColumn prop="name" label="仓库名称" />
-      <ElTableColumn label="所属主体" width="120">
-        <template #default="scope">
-          {{ getCompanyName((scope.row as Warehouse).companyId) }}
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="操作">
-        <template #default="scope">
-          <ElButton size="small" @click="openDialog(scope.row as Warehouse)">编辑</ElButton>
-          <ElButton size="small" type="danger" @click="handleDelete((scope.row as Warehouse).id)">删除</ElButton>
-        </template>
-      </ElTableColumn>
-    </ElTable>
-
     <ElDialog v-model="dialogVisible" :title="isEdit ? '编辑仓库' : '添加仓库'" width="450px">
-      <ElForm :model="form" label-width="100px">
+      <ElForm :model="form" label-width="100px" size="small">
         <ElFormItem label="仓库编码">
           <ElInput v-model="form.code" />
         </ElFormItem>
@@ -174,46 +173,33 @@ const getCompanyName = (id: string) => {
           <ElInput v-model="form.name" />
         </ElFormItem>
         <ElFormItem label="所属主体">
-          <ElSelect v-model="form.companyId" placeholder="请选择所属主体">
+          <ElSelect v-model="form.companyId" placeholder="请选择所属主体" filterable style="width: 100%">
             <ElOption
               v-for="company in companies"
               :key="company.id"
-              :label="company.name"
+              :label="`${company.name}（${company.code}）`"
               :value="company.id"
             />
           </ElSelect>
         </ElFormItem>
       </ElForm>
       <template #footer>
-        <ElButton @click="dialogVisible = false">取消</ElButton>
-        <ElButton type="primary" @click="handleSubmit">确定</ElButton>
+        <ElButton size="small" @click="dialogVisible = false">取消</ElButton>
+        <ElButton size="small" type="primary" @click="handleSubmit">确定</ElButton>
       </template>
     </ElDialog>
-  </div>
+  </PageShell>
 </template>
 
 <style scoped>
-.page-container {
-  padding: 20px;
+.table-wrap {
+  flex: 1;
+  min-height: 0;
+  padding: 0 12px;
+  overflow: hidden;
 }
 
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-
-.header-actions {
-  display: flex;
-  gap: 10px;
-}
-
-.import-input {
+.hidden-file {
   display: none;
-}
-
-:deep(.el-select) {
-  width: 100%;
 }
 </style>

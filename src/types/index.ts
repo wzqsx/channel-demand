@@ -1,63 +1,69 @@
 // 公司主体信息
 export interface Company {
   id: string;
-  name: string; // 公司名称
-  code: string; // 公司编码
+  name: string;
+  code: string;
 }
 
 // 商品信息
 export interface Product {
   id: string;
-  code: string; // 商品编码
-  name: string; // 商品名称
-  spec: string; // 商品规格
-  bottleUnit: string; // 瓶单位
-  boxUnit: string; // 箱单位
-  bottlesPerBox: number; // 每箱多少瓶
-  stock: number; // 当前库存（瓶）
-  warningThreshold: number; // 库存预警阈值（瓶）
-  isCombined: boolean; // 是否为组合商品
-  combineProductCode: string; // 组合商品对应的基础商品编码
-  combineRatio: number; // 换算比例（如12表示1个组合商品=12个基础商品）
+  code: string;
+  name: string;
+  spec: string;
+  bottleUnit: string;
+  boxUnit: string;
+  bottlesPerBox: number;
+  stock: number;
+  warningThreshold: number;
+  isCombined: boolean;
+  combineProductCode: string;
+  combineRatio: number;
 }
 
 // 仓库信息
 export interface Warehouse {
   id: string;
-  name: string; // 仓库名称
-  code: string; // 仓库编码
-  companyId: string; // 所属主体ID
+  name: string;
+  code: string;
+  companyId: string;
 }
 
 // 渠道信息
 export interface Channel {
   id: string;
-  name: string; // 渠道名称
-  warehouseIds: string[]; // 允许选择的仓库ID列表
-  priority: number; // 优先级（数字越小优先级越高，默认100）
-  companyId: string; // 所属主体ID
+  name: string;
+  warehouseIds: string[];
+  /** 数字越小优先级越高，默认 100；仅在同一主体内比较 */
+  priority: number;
+  companyId: string;
 }
 
-// 要货单商品
+// 要货/销货明细行
 export interface RequisitionItem {
   id: string;
-  productCode: string; // 商品编码
-  productName: string; // 商品名称
-  quantity: number; // 数量
-  remark: string; // 备注
+  productCode: string;
+  productName: string;
+  quantity: number;
+  remark: string;
 }
 
 // 要货单
 export interface Requisition {
   id: string;
-  channelId: string; // 渠道ID
-  warehouseIds: string[]; // 仓库ID列表（多选）
+  companyId: string;
+  channelId: string;
+  warehouseIds: string[];
+  /** 周起始（周六 YYYY-MM-DD） */
+  weekStart: string;
   items: RequisitionItem[];
   status: 'pending' | 'approved' | 'rejected';
   createdAt: string;
+  /** 本周实际销货（审批后录入，用于核对是否虚报） */
+  salesItems?: RequisitionItem[];
+  salesFilledAt?: string;
 }
 
-// 导入的要货数据
 export interface ImportRequisitionData {
   productCode: string;
   productName: string;
@@ -65,29 +71,61 @@ export interface ImportRequisitionData {
   remark: string;
 }
 
-// 仓库库存
 export interface WarehouseStock {
   id: string;
-  warehouseId: string; // 仓库ID
-  productCode: string; // 商品编码
-  stock: number; // 库存数量（瓶）
-  inTransitStock: number; // 在途库存（瓶）
-  customFields?: Record<string, any>; // 自定义字段
+  warehouseId: string;
+  productCode: string;
+  stock: number;
+  inTransitStock: number;
+  customFields?: Record<string, any>;
 }
 
-// 导入的仓库库存数据
 export interface ImportWarehouseStockData {
-  warehouseCode: string; // 仓库编码
-  productCode: string; // 商品编码
-  productName: string; // 商品名称
-  stock: number; // 库存数量（瓶）
-  inTransitStock: number; // 在途库存（瓶）
-  [key: string]: any; // 支持自定义字段
+  warehouseCode: string;
+  productCode: string;
+  productName: string;
+  stock: number;
+  inTransitStock: number;
+  [key: string]: any;
 }
 
-// 自定义字段配置
 export interface CustomFieldConfig {
-  key: string; // 字段键名
-  label: string; // 显示名称
-  type: 'text' | 'number' | 'date'; // 字段类型
+  key: string;
+  label: string;
+  type: 'text' | 'number' | 'date';
+}
+
+export type FieldType = 'text' | 'number' | 'date';
+
+export interface StockSnapshot {
+  id: string;
+  snapshotTime: string;
+  description: string;
+  /** 关联周起始（可选） */
+  weekStart?: string;
+  stocks: WarehouseStock[];
+}
+
+/** 要货 vs 实际销货对比行 */
+export interface DemandSalesCompareRow {
+  productCode: string;
+  productName: string;
+  demandQty: number;
+  salesQty: number;
+  /** 虚报量 = max(0, 要货 - 销货) */
+  overClaim: number;
+  /** 要货/销货 比率；销货为 0 时为 Infinity */
+  ratio: number;
+  /** accurate | overclaim | underclaim | no_sales | no_demand */
+  status: 'accurate' | 'overclaim' | 'underclaim' | 'no_sales' | 'no_demand';
+}
+
+export interface RequisitionAnalysis {
+  productCode: string;
+  productName: string;
+  availableStock: number;
+  requestedQuantity: number;
+  shortage: number;
+  status: 'can_supply' | 'cannot_supply' | 'insufficient';
+  channels: string[];
 }

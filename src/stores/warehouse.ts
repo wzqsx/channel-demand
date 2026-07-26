@@ -5,8 +5,8 @@ import type { Warehouse } from '../types';
 export const useWarehouseStore = defineStore('warehouse', () => {
   const warehouses = ref<Warehouse[]>([]);
 
-  // 模拟初始数据
   const initWarehouses = () => {
+    if (warehouses.value.length > 0) return;
     warehouses.value = [
       { id: 'W001', name: 'A仓', code: 'A', companyId: 'COMP001' },
       { id: 'W002', name: 'B仓', code: 'B', companyId: 'COMP001' },
@@ -20,11 +20,7 @@ export const useWarehouseStore = defineStore('warehouse', () => {
   };
 
   const addWarehouse = (warehouse: Omit<Warehouse, 'id'>) => {
-    const newWarehouse: Warehouse = {
-      ...warehouse,
-      id: Date.now().toString(),
-    };
-    warehouses.value.push(newWarehouse);
+    warehouses.value.push({ ...warehouse, id: Date.now().toString() });
   };
 
   const updateWarehouse = (id: string, warehouse: Partial<Warehouse>) => {
@@ -36,22 +32,27 @@ export const useWarehouseStore = defineStore('warehouse', () => {
 
   const deleteWarehouse = (id: string) => {
     const index = warehouses.value.findIndex(w => w.id === id);
-    if (index !== -1) {
-      warehouses.value.splice(index, 1);
+    if (index !== -1) warehouses.value.splice(index, 1);
+  };
+
+  const getWarehouseById = (id: string) => warehouses.value.find(w => w.id === id);
+
+  const getWarehouseByCode = (code: string) => warehouses.value.find(w => w.code === code);
+
+  const getWarehousesByIds = (ids: string[]) =>
+    warehouses.value.filter(w => ids.includes(w.id));
+
+  const getWarehousesByCompany = (companyId: string) =>
+    warehouses.value.filter(w => w.companyId === companyId);
+
+  const upsertByCode = (data: Omit<Warehouse, 'id'>) => {
+    const existing = getWarehouseByCode(data.code);
+    if (existing) {
+      updateWarehouse(existing.id, data);
+      return existing.id;
     }
-  };
-
-  const getWarehouseById = (id: string) => {
-    return warehouses.value.find(w => w.id === id);
-  };
-
-  const getWarehousesByIds = (ids: string[]) => {
-    return warehouses.value.filter(w => ids.includes(w.id));
-  };
-
-  // 获取指定主体下的仓库列表
-  const getWarehousesByCompany = (companyId: string) => {
-    return warehouses.value.filter(w => w.companyId === companyId);
+    addWarehouse(data);
+    return warehouses.value[warehouses.value.length - 1]?.id;
   };
 
   return {
@@ -61,7 +62,9 @@ export const useWarehouseStore = defineStore('warehouse', () => {
     updateWarehouse,
     deleteWarehouse,
     getWarehouseById,
+    getWarehouseByCode,
     getWarehousesByIds,
     getWarehousesByCompany,
+    upsertByCode,
   };
-});
+}, { persist: true });
