@@ -28,6 +28,8 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
       { id: '9', warehouseId: 'W005', productCode: 'P001', stock: 100, inTransitStock: 20 },
       { id: '10', warehouseId: 'W006', productCode: 'P001', stock: 80, inTransitStock: 0 },
       { id: '11', warehouseId: 'W008', productCode: 'P001', stock: 60, inTransitStock: 10 },
+      // 箱规编码库存：P0012 → P001 ×12，验瓶规要货时计入
+      { id: '12', warehouseId: 'W001', productCode: 'P0012', stock: 5, inTransitStock: 0 },
     ];
   };
 

@@ -4,6 +4,7 @@ import { useWarehouseStore } from '../stores/warehouse';
 import { useProductStore } from '../stores/product';
 import { useChannelStore } from '../stores/channel';
 import { filterWarehouseIdsByCompany } from './companyScope';
+import { getBottleEquivalentStock, getPackProductsForBase } from './packStock';
 
 export type AlertKind = 'shortage' | 'warning';
 
@@ -15,6 +16,10 @@ export interface ShortageAlertRow {
   currentStock: number;
   inTransitStock: number;
   availableStock: number;
+  /** 瓶规自身库存（不含箱规折算） */
+  ownStock: number;
+  /** 箱规折算进瓶规的数量 */
+  packStock: number;
   warningThreshold: number;
   totalDemand: number;
   shortage: number;
@@ -86,16 +91,23 @@ export function buildShortageAndWarnings(opts: {
   const rows: ShortageAlertRow[] = [];
   const seenWarning = new Set<string>();
 
-  // 1) 缺货：有需求且缺口 > 0
+  // 1) 缺货：有需求且缺口 > 0（可用含箱规折算）
   demandAgg.forEach((agg, key) => {
     const productCode = key.split('__')[1];
     const product = productStore.getProductByCode(productCode);
+    // 箱规编码的要货应已在导入时折成瓶规；若仍落到箱规，跳过（由瓶规行体现）
+    if (product?.isCombined) return;
+
     const whIds = [...agg.warehouseIds];
-    const currentStock = stockStore.getTotalStock(productCode, whIds);
-    const inTransitStock = stockStore.getTotalInTransitStock(productCode, whIds);
-    const availableStock = currentStock + inTransitStock;
+    const eq = getBottleEquivalentStock(productCode, whIds);
+    const currentStock = eq.currentStock;
+    const inTransitStock = eq.inTransitStock;
+    const availableStock = eq.availableStock;
     const shortage = Math.max(0, agg.quantity - availableStock);
     const warningThreshold = product?.warningThreshold ?? 0;
+    const packHint = eq.packStock + eq.packInTransit > 0
+      ? `（含箱规折算 ${eq.packStock + eq.packInTransit}）`
+      : '';
 
     if (shortage > 0) {
       rows.push({
@@ -106,15 +118,16 @@ export function buildShortageAndWarnings(opts: {
         currentStock,
         inTransitStock,
         availableStock,
+        ownStock: eq.ownStock + eq.ownInTransit,
+        packStock: eq.packStock + eq.packInTransit,
         warningThreshold,
         totalDemand: agg.quantity,
         shortage,
         channels: [...agg.channels],
         kind: 'shortage',
-        statusText: availableStock === 0 ? '缺货（库存为0）' : '缺货（需求超过可用）',
+        statusText: (availableStock === 0 ? '缺货（库存为0）' : '缺货（需求超过可用）') + packHint,
       });
     } else if (availableStock <= warningThreshold) {
-      // 有要货且可用已低于预警，归入预警（同时记入避免重复）
       const wkey = `${agg.companyId}__${productCode}`;
       seenWarning.add(wkey);
       rows.push({
@@ -125,17 +138,19 @@ export function buildShortageAndWarnings(opts: {
         currentStock,
         inTransitStock,
         availableStock,
+        ownStock: eq.ownStock + eq.ownInTransit,
+        packStock: eq.packStock + eq.packInTransit,
         warningThreshold,
         totalDemand: agg.quantity,
         shortage: 0,
         channels: [...agg.channels],
         kind: 'warning',
-        statusText: '低于库存预警',
+        statusText: '低于库存预警' + packHint,
       });
     }
   });
 
-  // 2) 预警：本主体各仓 SKU 可用 ≤ 预警，即使没有要货
+  // 2) 预警：仅看瓶规；可用含箱规折算
   const companyIds = opts.companyId
     ? [opts.companyId]
     : [...new Set(warehouseStore.warehouses.map(w => w.companyId))];
@@ -148,20 +163,26 @@ export function buildShortageAndWarnings(opts: {
       if (product.isCombined) return;
       const wkey = `${companyId}__${product.code}`;
       if (seenWarning.has(wkey)) return;
-      // 若已有缺货行，不再重复加预警
       if (rows.some(r => r.companyId === companyId && r.productCode === product.code && r.kind === 'shortage')) {
         return;
       }
 
-      const currentStock = stockStore.getTotalStock(product.code, companyWhIds);
-      const inTransitStock = stockStore.getTotalInTransitStock(product.code, companyWhIds);
-      const availableStock = currentStock + inTransitStock;
+      const eq = getBottleEquivalentStock(product.code, companyWhIds);
+      const currentStock = eq.currentStock;
+      const inTransitStock = eq.inTransitStock;
+      const availableStock = eq.availableStock;
       if (availableStock <= product.warningThreshold) {
-        // 完全无库存记录且阈值为0时跳过噪音
         const hasStockRow = stockStore.stocks.some(
-          s => s.productCode === product.code && companyWhIds.includes(s.warehouseId),
+          s =>
+            companyWhIds.includes(s.warehouseId)
+            && (s.productCode === product.code
+              || getPackProductsForBase(product.code).some(p => p.code === s.productCode)),
         );
         if (!hasStockRow && availableStock === 0 && product.warningThreshold === 0) return;
+
+        const packHint = eq.packStock + eq.packInTransit > 0
+          ? `（含箱规折算 ${eq.packStock + eq.packInTransit}）`
+          : '';
 
         rows.push({
           companyId,
@@ -171,12 +192,14 @@ export function buildShortageAndWarnings(opts: {
           currentStock,
           inTransitStock,
           availableStock,
+          ownStock: eq.ownStock + eq.ownInTransit,
+          packStock: eq.packStock + eq.packInTransit,
           warningThreshold: product.warningThreshold,
           totalDemand: demandAgg.get(wkey)?.quantity || 0,
           shortage: 0,
           channels: demandAgg.get(wkey) ? [...demandAgg.get(wkey)!.channels] : [],
           kind: 'warning',
-          statusText: '低于库存预警',
+          statusText: '低于库存预警' + packHint,
         });
       }
     });

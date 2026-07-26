@@ -210,7 +210,10 @@ const getCombineInfo = (product: Product) => {
 </script>
 
 <template>
-  <PageShell title="商品信息管理" help="维护 SKU 规格、单位与库存预警阈值">
+  <PageShell
+    title="商品信息管理"
+    help="瓶规=要货主编码；箱规勾选「组合商品」并填写基础瓶规编码与换算比例（1个箱规单位=几瓶）。验库存/缺货时箱规库存会折算进瓶规。"
+  >
     <template #toolbar>
       <input ref="importRef" type="file" accept=".xlsx,.xls" class="hidden-file" @change="handleImport" />
       <ElButton type="primary" size="small" @click="openDialog()">添加商品</ElButton>
@@ -263,14 +266,14 @@ const getCombineInfo = (product: Product) => {
             </ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="是否组合" width="90" align="center">
+        <ElTableColumn label="箱规" width="70" align="center">
           <template #default="{ row }">
             <ElTag size="small" :type="(row as Product).isCombined ? 'warning' : 'info'">
               {{ (row as Product).isCombined ? '是' : '否' }}
             </ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="组合换算" width="180" show-overflow-tooltip>
+        <ElTableColumn label="箱→瓶换算" width="180" show-overflow-tooltip>
           <template #default="{ row }">
             <span v-if="(row as Product).isCombined">{{ getCombineInfo(row as Product) }}</span>
             <span v-else class="text-muted">-</span>
@@ -311,11 +314,11 @@ const getCombineInfo = (product: Product) => {
         <ElFormItem label="预警阈值">
           <ElInputNumber v-model="form.warningThreshold" :min="0" />
         </ElFormItem>
-        <ElFormItem label="是否组合商品">
+        <ElFormItem label="箱规/组合">
           <ElCheckbox v-model="form.isCombined" />
         </ElFormItem>
-        <ElFormItem v-if="form.isCombined" label="基础商品编码">
-          <ElSelect v-model="form.combineProductCode" placeholder="请选择基础商品">
+        <ElFormItem v-if="form.isCombined" label="基础瓶规编码">
+          <ElSelect v-model="form.combineProductCode" placeholder="请选择基础瓶规商品">
             <ElOption
               v-for="product in store.baseProducts"
               :key="product.code"
@@ -326,7 +329,7 @@ const getCombineInfo = (product: Product) => {
         </ElFormItem>
         <ElFormItem v-if="form.isCombined" label="换算比例">
           <ElInputNumber v-model="form.combineRatio" :min="1" />
-          <span style="margin-left: 8px;">（1个组合商品 = N个基础商品）</span>
+          <span style="margin-left: 8px;">（1箱规 = N瓶规）</span>
         </ElFormItem>
       </ElForm>
       <template #footer>

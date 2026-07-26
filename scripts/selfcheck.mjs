@@ -118,7 +118,24 @@ async function main() {
   const availAll = stock.getAvailableStockByWarehouses(code, undefined);
   ok('不传仓库时按全库汇总', availAll >= avail);
 
-  console.log('\n[7] 要货 migrate 不炸');
+  console.log('\n[7] 数量单位换算展示');
+  const { formatQtyWithUnits } = await import('../src/utils/qtyDisplay.ts');
+  ok('240瓶→10箱', formatQtyWithUnits(240, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '10箱');
+  ok('243瓶→10箱零3瓶', formatQtyWithUnits(243, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '10箱零3瓶');
+  ok('3瓶→3瓶', formatQtyWithUnits(3, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '3瓶');
+
+  console.log('\n[8] 箱规库存折算进瓶规');
+  const { getBottleEquivalentStock } = await import('../src/utils/packStock.ts');
+  const stockStore = useWarehouseStockStore();
+  // 固定仓：瓶规 10 + 箱规 2×12=24 → 可用 34
+  stockStore.upsertStock('W001', 'P001', 10, 0);
+  stockStore.upsertStock('W001', 'P0012', 2, 0);
+  const eq = getBottleEquivalentStock('P001', ['W001']);
+  ok('瓶规自身 10', eq.ownStock === 10, `own=${eq.ownStock}`);
+  ok('箱规折算 24', eq.packStock === 24, `pack=${eq.packStock}`);
+  ok('合计可用 34', eq.availableStock === 34, `avail=${eq.availableStock}`);
+
+  console.log('\n[9] 要货 migrate 不炸');
   useRequisitionStore().migrateLegacy();
   ok('migrateLegacy 可执行', true);
 
