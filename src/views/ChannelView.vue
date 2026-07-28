@@ -56,10 +56,12 @@ const openDialog = (channel?: Channel) => {
       priority: channel.priority || 100,
       companyIds: channel.companyId ? [channel.companyId] : [],
     };
+    focusCompanyId.value = channel.companyId || '';
   } else {
     isEdit.value = false;
     editId.value = '';
     form.value = { name: '', warehouseIds: [], priority: 100, companyIds: [] };
+    focusCompanyId.value = '';
   }
   dialogVisible.value = true;
 };
@@ -81,6 +83,18 @@ const toggleCompany = (id: string) => {
 };
 
 const isCompanyChecked = (id: string) => form.value.companyIds.includes(id);
+
+const focusCompanyId = ref('');
+
+const focusCompany = (id: string) => {
+  focusCompanyId.value = id;
+  if (!form.value.companyIds.includes(id)) {
+    toggleCompany(id);
+  }
+};
+
+const warehouseCountOf = (companyId: string) =>
+  warehouseStore.getWarehousesByCompany(companyId).length;
 
 const clearWarehouses = () => {
   form.value.warehouseIds = [];
@@ -221,6 +235,31 @@ const filteredWarehouses = computed(() => {
   return warehouseStore.warehouses.filter(w => set.has(w.companyId));
 });
 
+const warehouseTreeGroups = computed(() => {
+  const groups: {
+    companyId: string;
+    companyName: string;
+    warehouses: typeof filteredWarehouses.value;
+  }[] = [];
+  form.value.companyIds.forEach(cid => {
+    const list = filteredWarehouses.value.filter(w => w.companyId === cid);
+    if (!list.length && focusCompanyId.value !== cid) return;
+    groups.push({
+      companyId: cid,
+      companyName: companyStore.getCompanyById(cid)?.name || cid,
+      warehouses: list,
+    });
+  });
+  if (focusCompanyId.value) {
+    groups.sort((a, b) => {
+      if (a.companyId === focusCompanyId.value) return -1;
+      if (b.companyId === focusCompanyId.value) return 1;
+      return 0;
+    });
+  }
+  return groups;
+});
+
 const companyFilterOptions = computed(() =>
   companies.value.map(c => ({ value: c.id, label: `${c.name}（${c.code}）` })),
 );
@@ -278,13 +317,13 @@ const listRows = computed(() => {
     <ElDialog
       v-model="dialogVisible"
       :title="isEdit ? '编辑渠道' : '添加渠道'"
-      width="520px"
+      width="720px"
       append-to-body
       align-center
       :close-on-click-modal="false"
       destroy-on-close
     >
-      <ElForm :model="form" label-width="100px" size="small" @submit.prevent>
+      <ElForm :model="form" label-width="88px" size="small" @submit.prevent>
         <ElFormItem label="渠道名称">
           <ElInput
             v-model="form.name"
@@ -294,65 +333,66 @@ const listRows = computed(() => {
             placeholder="例如：快乐猴（中文无限制）"
           />
         </ElFormItem>
-        <ElFormItem label="所属主体">
-          <div class="wh-box">
-            <div class="wh-box__bar">
-              <span class="wh-box__hint">
-                已选 {{ form.companyIds.length }}/{{ companies.length }} · 可多选；仓库须最终同属一个主体
-              </span>
-              <ElButton link size="small" :disabled="!form.companyIds.length" @click="clearCompanies">
-                清空已选
-              </ElButton>
+        <ElFormItem label="主体仓库">
+          <div class="scope-split">
+            <div class="scope-pane scope-pane--left">
+              <div class="scope-pane__head">
+                <span>主体</span>
+                <span class="scope-pane__meta">{{ form.companyIds.length }}/{{ companies.length }}</span>
+                <ElButton link size="small" :disabled="!form.companyIds.length" @click="clearCompanies">清空</ElButton>
+              </div>
+              <div v-if="companies.length" class="scope-pane__body">
+                <div
+                  v-for="(c, idx) in companies"
+                  :key="`${c.code}__${c.id}__${idx}`"
+                  class="scope-node"
+                  :class="{ on: isCompanyChecked(c.id), focus: focusCompanyId === c.id }"
+                  @click="focusCompany(c.id)"
+                >
+                  <span
+                    class="wh-box__check"
+                    :class="{ on: isCompanyChecked(c.id) }"
+                    @click.stop="toggleCompany(c.id)"
+                  />
+                  <div class="scope-node__main">
+                    <div class="scope-node__title">{{ c.name }}</div>
+                    <div class="scope-node__sub">{{ c.code }} · {{ warehouseCountOf(c.id) }} 仓</div>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="scope-pane__empty">暂无主体</div>
             </div>
-            <div v-if="companies.length" class="wh-box__list">
-              <div
-                v-for="(c, idx) in companies"
-                :key="`${c.code}__${c.id}__${idx}`"
-                class="wh-box__item"
-                role="checkbox"
-                :aria-checked="isCompanyChecked(c.id)"
-                tabindex="0"
-                @click="toggleCompany(c.id)"
-                @keydown.enter.prevent="toggleCompany(c.id)"
-                @keydown.space.prevent="toggleCompany(c.id)"
-              >
-                <span class="wh-box__check" :class="{ on: isCompanyChecked(c.id) }" />
-                <span class="wh-box__text">{{ c.name }}（{{ c.code }}）</span>
+
+            <div class="scope-pane scope-pane--right">
+              <div class="scope-pane__head">
+                <span>可用仓库</span>
+                <span class="scope-pane__meta">{{ form.warehouseIds.length }}/{{ filteredWarehouses.length }}</span>
+                <ElButton link size="small" :disabled="!form.warehouseIds.length" @click="clearWarehouses">清空</ElButton>
+              </div>
+              <div v-if="warehouseTreeGroups.length" class="scope-pane__body">
+                <div v-for="g in warehouseTreeGroups" :key="g.companyId" class="scope-group">
+                  <div class="scope-group__title">{{ g.companyName }}</div>
+                  <div
+                    v-for="(w, idx) in g.warehouses"
+                    :key="`${w.code}__${w.id}__${idx}`"
+                    class="scope-node scope-node--leaf"
+                    :class="{ on: isWarehouseChecked(w.id) }"
+                    @click="toggleWarehouse(w.id)"
+                  >
+                    <span class="wh-box__check" :class="{ on: isWarehouseChecked(w.id) }" />
+                    <div class="scope-node__main">
+                      <div class="scope-node__title">{{ w.name }}</div>
+                      <div class="scope-node__sub">{{ w.code }}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="scope-pane__empty">
+                {{ form.companyIds.length ? '已选主体下暂无仓库' : '请先在左侧勾选主体' }}
               </div>
             </div>
-            <div v-else class="wh-box__empty">暂无主体，请先到「公司主体」新增</div>
           </div>
-        </ElFormItem>
-        <ElFormItem label="可用仓库">
-          <div class="wh-box">
-            <div class="wh-box__bar">
-              <span class="wh-box__hint">
-                已选 {{ form.warehouseIds.length }}/{{ filteredWarehouses.length }} · 可逐个勾/取消；勿跨主体混选仓库
-              </span>
-              <ElButton link size="small" :disabled="!form.warehouseIds.length" @click="clearWarehouses">
-                清空已选
-              </ElButton>
-            </div>
-            <div v-if="filteredWarehouses.length" class="wh-box__list">
-              <div
-                v-for="(w, idx) in filteredWarehouses"
-                :key="`${w.code}__${w.id}__${idx}`"
-                class="wh-box__item"
-                role="checkbox"
-                :aria-checked="isWarehouseChecked(w.id)"
-                tabindex="0"
-                @click="toggleWarehouse(w.id)"
-                @keydown.enter.prevent="toggleWarehouse(w.id)"
-                @keydown.space.prevent="toggleWarehouse(w.id)"
-              >
-                <span class="wh-box__check" :class="{ on: isWarehouseChecked(w.id) }" />
-                <span class="wh-box__text">{{ w.name }}（{{ w.code }}）</span>
-              </div>
-            </div>
-            <div v-else class="wh-box__empty">
-              {{ form.companyIds.length ? '已选主体下暂无仓库' : '请先勾选所属主体' }}
-            </div>
-          </div>
+          <div class="scope-tip">可多选主体浏览仓库；保存时同一渠道的仓库须属于同一主体</div>
         </ElFormItem>
         <ElFormItem>
           <template #label>
@@ -383,52 +423,115 @@ const listRows = computed(() => {
 .hidden-file {
   display: none;
 }
-.wh-box {
+
+.scope-split {
   width: 100%;
+  display: grid;
+  grid-template-columns: minmax(180px, 0.9fr) minmax(260px, 1.4fr);
+  gap: 0;
   border: 1px solid var(--erp-border);
-  border-radius: 6px;
-  padding: 8px 10px;
-  background: #fafbfc;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+  min-height: 280px;
 }
-.wh-box__bar {
+.scope-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.scope-pane--left {
+  border-right: 1px solid var(--erp-border);
+  background: #f7f9fb;
+}
+.scope-pane__head {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--erp-text);
+  border-bottom: 1px solid var(--erp-border);
+  background: #fff;
 }
-.wh-box__hint {
+.scope-pane__meta {
+  margin-left: auto;
+  font-weight: 400;
+  color: var(--erp-text-muted);
+}
+.scope-pane__body {
   flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+}
+.scope-pane__empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  font-size: 12px;
+  color: var(--erp-text-muted);
+}
+.scope-group {
+  margin-bottom: 8px;
+}
+.scope-group__title {
+  padding: 4px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--erp-text-muted);
+}
+.scope-node {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.scope-node:hover {
+  background: #eef3f9;
+}
+.scope-node.focus {
+  background: #e8f1fb;
+}
+.scope-node.on {
+  background: #eef6ff;
+}
+.scope-node--leaf {
+  padding: 6px 8px;
+}
+.scope-node__main {
+  min-width: 0;
+  flex: 1;
+}
+.scope-node__title {
+  font-size: 13px;
+  color: var(--erp-text);
+  line-height: 1.3;
+  word-break: break-all;
+}
+.scope-node__sub {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--erp-text-muted);
+}
+.scope-tip {
+  margin-top: 6px;
   font-size: 11px;
   color: var(--erp-text-muted);
   line-height: 1.4;
 }
-.wh-box__list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-height: 180px;
-  overflow-y: auto;
-}
-.wh-box__item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 28px;
-  margin: 0;
-  padding: 2px 4px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--erp-text);
-  user-select: none;
-}
-.wh-box__item:hover {
-  background: #eef3f9;
-}
+
 .wh-box__check {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
+  margin-top: 2px;
   border: 1px solid #c0c6cc;
   border-radius: 3px;
   background: #fff;
@@ -449,13 +552,5 @@ const listRows = computed(() => {
   border: solid #fff;
   border-width: 0 2px 2px 0;
   transform: rotate(45deg);
-}
-.wh-box__text {
-  line-height: 1.3;
-}
-.wh-box__empty {
-  padding: 10px 0;
-  font-size: 12px;
-  color: var(--erp-text-muted);
 }
 </style>
