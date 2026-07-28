@@ -14,8 +14,6 @@ import {
   ElInputNumber,
   ElMessage,
   ElTag,
-  ElCheckboxGroup,
-  ElCheckbox,
 } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
 import HelpTip from '../components/HelpTip.vue';
@@ -67,6 +65,17 @@ const openDialog = (channel?: Channel) => {
 
 const handleCompanyChange = () => {
   form.value.warehouseIds = [];
+};
+
+const clearWarehouses = () => {
+  form.value.warehouseIds = [];
+};
+
+const toggleWarehouse = (id: string, checked: boolean) => {
+  const set = new Set(form.value.warehouseIds);
+  if (checked) set.add(id);
+  else set.delete(id);
+  form.value.warehouseIds = [...set];
 };
 
 const handleSubmit = () => {
@@ -180,10 +189,7 @@ const getPriorityLabel = (priority: number) => {
 const filteredWarehouses = computed(() =>
   form.value.companyId ? warehouseStore.getWarehousesByCompany(form.value.companyId) : [],
 );
-
-const clearWarehouses = () => {
-  form.value.warehouseIds = [];
-};</script>
+</script>
 
 <template>
   <PageShell title="渠道管理" help="按主体隔离；优先级数字越小越高，仅同主体内参与占库存竞争。主体/仓库下拉与主数据实时同步。">
@@ -254,21 +260,27 @@ const clearWarehouses = () => {
         <ElFormItem label="可用仓库">
           <div class="wh-box">
             <div class="wh-box__bar">
-              <span class="wh-box__hint">仅显示当前主体仓库，请逐个勾选（不会自动全选）</span>
+              <span class="wh-box__hint">
+                已选 {{ form.warehouseIds.length }}/{{ filteredWarehouses.length }} · 可逐个勾/取消；旧数据若全勾了，先点清空
+              </span>
               <ElButton link size="small" :disabled="!form.warehouseIds.length" @click="clearWarehouses">
                 清空已选
               </ElButton>
             </div>
-            <ElCheckboxGroup v-if="filteredWarehouses.length" v-model="form.warehouseIds" class="wh-box__list">
-              <ElCheckbox
+            <div v-if="filteredWarehouses.length" class="wh-box__list">
+              <label
                 v-for="w in filteredWarehouses"
                 :key="w.id"
-                :label="w.id"
                 class="wh-box__item"
               >
-                {{ w.name }}（{{ w.code }}）
-              </ElCheckbox>
-            </ElCheckboxGroup>
+                <input
+                  type="checkbox"
+                  :checked="form.warehouseIds.includes(w.id)"
+                  @change="toggleWarehouse(w.id, ($event.target as HTMLInputElement).checked)"
+                />
+                <span>{{ w.name }}（{{ w.code }}）</span>
+              </label>
+            </div>
             <div v-else class="wh-box__empty">
               {{ form.companyId ? '该主体下暂无仓库' : '请先选择所属主体' }}
             </div>
@@ -330,8 +342,21 @@ const clearWarehouses = () => {
   overflow-y: auto;
 }
 .wh-box__item {
-  margin-right: 0;
-  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  margin: 0;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--erp-text);
+  user-select: none;
+}
+.wh-box__item input {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  cursor: pointer;
 }
 .wh-box__empty {
   padding: 10px 0;

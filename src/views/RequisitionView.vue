@@ -14,8 +14,6 @@ import {
   ElTag,
   ElMessageBox,
   ElDatePicker,
-  ElCheckboxGroup,
-  ElCheckbox,
 } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
 import HelpTip from '../components/HelpTip.vue';
@@ -120,6 +118,13 @@ const handleChannelChange = () => {
 
 const clearWarehouses = () => {
   form.value.warehouseIds = [];
+};
+
+const toggleWarehouse = (id: string, checked: boolean) => {
+  const set = new Set(form.value.warehouseIds);
+  if (checked) set.add(id);
+  else set.delete(id);
+  form.value.warehouseIds = [...set];
 };
 
 const companyFilterOptions = computed(() =>
@@ -536,21 +541,27 @@ const salesFileRef = ref<HTMLInputElement | null>(null);
           <ElFormItem label="仓库" required>
             <div class="wh-box">
               <div class="wh-box__bar">
-                <span class="wh-box__hint">已选主体/渠道下的仓库，请逐个勾选（不会自动全选）</span>
+                <span class="wh-box__hint">
+                  已选 {{ form.warehouseIds.length }}/{{ filteredWarehouses.length }} · 可逐个勾/取消；旧数据若全勾了，先点清空
+                </span>
                 <ElButton link size="small" :disabled="!form.warehouseIds.length" @click="clearWarehouses">
                   清空已选
                 </ElButton>
               </div>
-              <ElCheckboxGroup v-if="filteredWarehouses.length" v-model="form.warehouseIds" class="wh-box__list">
-                <ElCheckbox
+              <div v-if="filteredWarehouses.length" class="wh-box__list">
+                <label
                   v-for="w in filteredWarehouses"
                   :key="w.id"
-                  :label="w.id"
                   class="wh-box__item"
                 >
-                  {{ w.name }}（{{ w.code }}）
-                </ElCheckbox>
-              </ElCheckboxGroup>
+                  <input
+                    type="checkbox"
+                    :checked="form.warehouseIds.includes(w.id)"
+                    @change="toggleWarehouse(w.id, ($event.target as HTMLInputElement).checked)"
+                  />
+                  <span>{{ w.name }}（{{ w.code }}）</span>
+                </label>
+              </div>
               <div v-else class="wh-box__empty">
                 {{ form.channelId ? '该渠道暂无可用仓库' : '请先选择主体和渠道' }}
               </div>
@@ -784,8 +795,21 @@ const salesFileRef = ref<HTMLInputElement | null>(null);
   overflow-y: auto;
 }
 .wh-box__item {
-  margin-right: 0;
-  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  margin: 0;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--erp-text);
+  user-select: none;
+}
+.wh-box__item input {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  cursor: pointer;
 }
 .wh-box__empty {
   padding: 10px 0;

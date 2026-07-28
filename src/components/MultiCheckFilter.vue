@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ElPopover, ElButton, ElCheckboxGroup, ElCheckbox } from 'element-plus';
+import { ElPopover, ElButton } from 'element-plus';
 
 /**
- * 多选筛选：勾选列表，避免 ElSelect multiple 一点就像全选的体验问题
+ * 多选筛选：原生勾选，避免 Element Plus Checkbox 在部分浏览器里点选异常
  */
 const props = withDefaults(
   defineProps<{
@@ -25,10 +25,17 @@ const selectAll = () => {
 const clearAll = () => {
   model.value = [];
 };
+
+const toggleOne = (value: string, checked: boolean) => {
+  const set = new Set(model.value);
+  if (checked) set.add(value);
+  else set.delete(value);
+  model.value = [...set];
+};
 </script>
 
 <template>
-  <ElPopover placement="bottom-start" :width="280" trigger="click">
+  <ElPopover placement="bottom-start" :width="280" trigger="click" :hide-after="0">
     <template #reference>
       <ElButton size="small" class="mcf-btn" :style="{ width }">
         <span class="mcf-btn__text">
@@ -42,22 +49,26 @@ const clearAll = () => {
       </ElButton>
     </template>
 
-    <div class="mcf">
+    <div class="mcf" @click.stop>
       <div class="mcf__bar">
         <ElButton link type="primary" size="small" @click="selectAll">全选</ElButton>
         <ElButton link size="small" @click="clearAll">清空</ElButton>
         <span class="mcf__count">已选 {{ model.length }}/{{ options.length }}</span>
       </div>
-      <ElCheckboxGroup v-model="model" class="mcf__list">
-        <ElCheckbox
+      <div class="mcf__list">
+        <label
           v-for="o in options"
           :key="o.value"
-          :label="o.value"
           class="mcf__item"
         >
-          {{ o.label }}
-        </ElCheckbox>
-      </ElCheckboxGroup>
+          <input
+            type="checkbox"
+            :checked="model.includes(o.value)"
+            @change="toggleOne(o.value, ($event.target as HTMLInputElement).checked)"
+          />
+          <span>{{ o.label }}</span>
+        </label>
+      </div>
       <div v-if="!options.length" class="mcf__empty">暂无可选项</div>
     </div>
   </ElPopover>
@@ -101,8 +112,21 @@ const clearAll = () => {
   overflow-y: auto;
 }
 .mcf__item {
-  margin-right: 0;
-  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  margin: 0;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--erp-text);
+  user-select: none;
+}
+.mcf__item input {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  cursor: pointer;
 }
 .mcf__empty {
   padding: 12px 0;
