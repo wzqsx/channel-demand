@@ -48,8 +48,8 @@ const form = ref({
 });
 const editId = ref('');
 
-const searchWarehouseId = ref('');
-const searchCompanyId = ref('');
+const searchWarehouseIds = ref<string[]>([]);
+const searchCompanyIds = ref<string[]>([]);
 const importWeekStart = ref(weekStartSaturday());
 
 const importInputRef = ref<HTMLInputElement | null>(null);
@@ -87,21 +87,32 @@ const triggerReplaceImport = async () => {
 };
 
 const filteredWarehouses = computed(() => {
-  if (!searchCompanyId.value) return warehouses.value;
-  return warehouseStore.getWarehousesByCompany(searchCompanyId.value);
+  if (!searchCompanyIds.value.length) return warehouses.value;
+  const set = new Set(searchCompanyIds.value);
+  return warehouses.value.filter(w => set.has(w.companyId));
 });
 
 const filteredStocks = computed(() => {
   let result = stocks.value;
-  if (searchCompanyId.value) {
-    const ids = new Set(warehouseStore.getWarehousesByCompany(searchCompanyId.value).map(w => w.id));
+  if (searchCompanyIds.value.length) {
+    const ids = new Set(
+      warehouses.value
+        .filter(w => searchCompanyIds.value.includes(w.companyId))
+        .map(w => w.id),
+    );
     result = result.filter(s => ids.has(s.warehouseId));
   }
-  if (searchWarehouseId.value) {
-    result = result.filter(s => s.warehouseId === searchWarehouseId.value);
+  if (searchWarehouseIds.value.length) {
+    const set = new Set(searchWarehouseIds.value);
+    result = result.filter(s => set.has(s.warehouseId));
   }
   return result;
 });
+
+const onCompanyFilterChange = () => {
+  const allowed = new Set(filteredWarehouses.value.map(w => w.id));
+  searchWarehouseIds.value = searchWarehouseIds.value.filter(id => allowed.has(id));
+};
 
 onMounted(() => {
   bootstrapStores();
@@ -335,12 +346,17 @@ const handleFieldDelete = (key: string) => {
         @change="(v: string) => { if (v) importWeekStart = weekStartSaturday(v) }"
       />
       <ElSelect
-        v-model="searchCompanyId"
+        v-model="searchCompanyIds"
+        multiple
         clearable
-        placeholder="主体"
+        collapse-tags
+        collapse-tags-tooltip
+        :max-collapse-tags="2"
+        filterable
+        placeholder="主体(可多选)"
         size="small"
-        style="width: 130px"
-        @change="searchWarehouseId = ''"
+        style="width: 200px"
+        @change="onCompanyFilterChange"
       >
         <ElOption
           v-for="c in companyStore.companies"
@@ -349,7 +365,18 @@ const handleFieldDelete = (key: string) => {
           :value="c.id"
         />
       </ElSelect>
-      <ElSelect v-model="searchWarehouseId" clearable placeholder="仓库" size="small" style="width: 130px">
+      <ElSelect
+        v-model="searchWarehouseIds"
+        multiple
+        clearable
+        collapse-tags
+        collapse-tags-tooltip
+        :max-collapse-tags="2"
+        filterable
+        placeholder="仓库(可多选)"
+        size="small"
+        style="width: 200px"
+      >
         <ElOption
           v-for="warehouse in filteredWarehouses"
           :key="warehouse.id"
