@@ -27,9 +27,12 @@ export function bootstrapStores() {
     channel.initChannels();
     product.initProducts();
     stock.initStocks();
-  } else if (channel.channels.length > 0) {
-    // 仅做跨主体挂仓清理，不会整表重置
-    channel.initChannels();
+  } else {
+    // 修复重复仓库 id（否则渠道里勾一个会像全选）
+    warehouse.ensureUniqueIds();
+    if (channel.channels.length > 0) {
+      channel.initChannels();
+    }
   }
 
   requisition.migrateLegacy();

@@ -71,12 +71,14 @@ const clearWarehouses = () => {
   form.value.warehouseIds = [];
 };
 
-const toggleWarehouse = (id: string, checked: boolean) => {
-  const set = new Set(form.value.warehouseIds);
-  if (checked) set.add(id);
-  else set.delete(id);
-  form.value.warehouseIds = [...set];
+/** 逐个切换；用 id 精确匹配，避免重复 id / 标签嵌套导致「点一个全选」 */
+const toggleWarehouse = (id: string) => {
+  if (!id) return;
+  const cur = form.value.warehouseIds;
+  form.value.warehouseIds = cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id];
 };
+
+const isWarehouseChecked = (id: string) => form.value.warehouseIds.includes(id);
 
 const handleSubmit = () => {
   const name = form.value.name.trim();
@@ -268,18 +270,20 @@ const filteredWarehouses = computed(() =>
               </ElButton>
             </div>
             <div v-if="filteredWarehouses.length" class="wh-box__list">
-              <label
-                v-for="w in filteredWarehouses"
-                :key="w.id"
+              <div
+                v-for="(w, idx) in filteredWarehouses"
+                :key="`${w.code}__${w.id}__${idx}`"
                 class="wh-box__item"
+                role="checkbox"
+                :aria-checked="isWarehouseChecked(w.id)"
+                tabindex="0"
+                @click="toggleWarehouse(w.id)"
+                @keydown.enter.prevent="toggleWarehouse(w.id)"
+                @keydown.space.prevent="toggleWarehouse(w.id)"
               >
-                <input
-                  type="checkbox"
-                  :checked="form.warehouseIds.includes(w.id)"
-                  @change="toggleWarehouse(w.id, ($event.target as HTMLInputElement).checked)"
-                />
-                <span>{{ w.name }}（{{ w.code }}）</span>
-              </label>
+                <span class="wh-box__check" :class="{ on: isWarehouseChecked(w.id) }" />
+                <span class="wh-box__text">{{ w.name }}（{{ w.code }}）</span>
+              </div>
             </div>
             <div v-else class="wh-box__empty">
               {{ form.companyId ? '该主体下暂无仓库' : '请先选择所属主体' }}
@@ -347,16 +351,43 @@ const filteredWarehouses = computed(() =>
   gap: 8px;
   min-height: 28px;
   margin: 0;
+  padding: 2px 4px;
+  border-radius: 4px;
   cursor: pointer;
   font-size: 13px;
   color: var(--erp-text);
   user-select: none;
 }
-.wh-box__item input {
+.wh-box__item:hover {
+  background: #eef3f9;
+}
+.wh-box__check {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
-  cursor: pointer;
+  border: 1px solid #c0c6cc;
+  border-radius: 3px;
+  background: #fff;
+  box-sizing: border-box;
+  position: relative;
+}
+.wh-box__check.on {
+  border-color: var(--erp-primary);
+  background: var(--erp-primary);
+}
+.wh-box__check.on::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 0;
+  width: 4px;
+  height: 8px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.wh-box__text {
+  line-height: 1.3;
 }
 .wh-box__empty {
   padding: 10px 0;

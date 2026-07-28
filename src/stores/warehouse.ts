@@ -2,6 +2,10 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import type { Warehouse } from '../types';
 
+function newWarehouseId() {
+  return `W_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
 export const useWarehouseStore = defineStore('warehouse', () => {
   const warehouses = ref<Warehouse[]>([]);
 
@@ -19,8 +23,29 @@ export const useWarehouseStore = defineStore('warehouse', () => {
     ];
   };
 
+  /**
+   * 修复历史导入造成的重复 id（同一毫秒 Date.now 撞车）。
+   * 重复 id 会导致勾选一个仓库时界面像「全选」。
+   */
+  const ensureUniqueIds = () => {
+    const seen = new Set<string>();
+    let fixed = 0;
+    warehouses.value = warehouses.value.map(w => {
+      const id = String(w.id || '').trim();
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        return id === w.id ? w : { ...w, id };
+      }
+      const nextId = newWarehouseId();
+      seen.add(nextId);
+      fixed += 1;
+      return { ...w, id: nextId };
+    });
+    return fixed;
+  };
+
   const addWarehouse = (warehouse: Omit<Warehouse, 'id'>) => {
-    warehouses.value.push({ ...warehouse, id: Date.now().toString() });
+    warehouses.value.push({ ...warehouse, id: newWarehouseId() });
   };
 
   const updateWarehouse = (id: string, warehouse: Partial<Warehouse>) => {
@@ -58,6 +83,7 @@ export const useWarehouseStore = defineStore('warehouse', () => {
   return {
     warehouses,
     initWarehouses,
+    ensureUniqueIds,
     addWarehouse,
     updateWarehouse,
     deleteWarehouse,
