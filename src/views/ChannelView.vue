@@ -9,8 +9,6 @@ import {
   ElForm,
   ElFormItem,
   ElInput,
-  ElSelect,
-  ElOption,
   ElInputNumber,
   ElMessage,
   ElTag,
@@ -38,7 +36,8 @@ const form = ref({
   name: '',
   warehouseIds: [] as string[],
   priority: 100,
-  companyId: '',
+  /** 弹窗内可多选主体（用于勾选仓库范围）；保存时仍落到单一 companyId */
+  companyIds: [] as string[],
 });
 const editId = ref('');
 const importRef = ref<HTMLInputElement | null>(null);
@@ -55,19 +54,33 @@ const openDialog = (channel?: Channel) => {
       name: channel.name,
       warehouseIds: [...channel.warehouseIds],
       priority: channel.priority || 100,
-      companyId: channel.companyId || '',
+      companyIds: channel.companyId ? [channel.companyId] : [],
     };
   } else {
     isEdit.value = false;
     editId.value = '';
-    form.value = { name: '', warehouseIds: [], priority: 100, companyId: '' };
+    form.value = { name: '', warehouseIds: [], priority: 100, companyIds: [] };
   }
   dialogVisible.value = true;
 };
 
-const handleCompanyChange = () => {
+const clearCompanies = () => {
+  form.value.companyIds = [];
   form.value.warehouseIds = [];
 };
+
+const toggleCompany = (id: string) => {
+  if (!id) return;
+  const cur = form.value.companyIds;
+  const next = cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id];
+  form.value.companyIds = next;
+  const allowed = new Set(
+    next.flatMap(cid => warehouseStore.getWarehousesByCompany(cid).map(w => w.id)),
+  );
+  form.value.warehouseIds = form.value.warehouseIds.filter(wid => allowed.has(wid));
+};
+
+const isCompanyChecked = (id: string) => form.value.companyIds.includes(id);
 
 const clearWarehouses = () => {
   form.value.warehouseIds = [];
@@ -85,20 +98,32 @@ const isWarehouseChecked = (id: string) => form.value.warehouseIds.includes(id);
 const handleSubmit = () => {
   const name = form.value.name.trim();
   if (!name) return ElMessage.error('请填写渠道名称');
-  if (!form.value.companyId) return ElMessage.error('请选择所属主体');
-  if (!companyStore.getCompanyById(form.value.companyId)) {
-    return ElMessage.error('所属主体不存在，请重新选择');
-  }
+  if (!form.value.companyIds.length) return ElMessage.error('请至少勾选一个所属主体');
   if (!form.value.warehouseIds.length) return ElMessage.error('请至少选择一个仓库');
 
-  const companyWarehouseIds = warehouseStore
-    .getWarehousesByCompany(form.value.companyId)
-    .map(w => w.id);
-  if (form.value.warehouseIds.some(id => !companyWarehouseIds.includes(id))) {
-    return ElMessage.error('所选仓库必须属于同一主体，不能跨主体');
+  const companyOfWh = new Set<string>();
+  for (const wid of form.value.warehouseIds) {
+    const w = warehouseStore.getWarehouseById(wid);
+    if (!w) return ElMessage.error('存在无效仓库，请重新勾选');
+    companyOfWh.add(w.companyId);
+  }
+  if (companyOfWh.size > 1) {
+    return ElMessage.error('同一渠道的仓库必须属于同一主体，不能跨主体混选');
+  }
+  const companyId = [...companyOfWh][0];
+  if (!form.value.companyIds.includes(companyId)) {
+    return ElMessage.error('所选仓库不属于已勾选的主体');
+  }
+  if (!companyStore.getCompanyById(companyId)) {
+    return ElMessage.error('所属主体不存在，请重新选择');
   }
 
-  const payload = { ...form.value, name };
+  const payload = {
+    name,
+    companyId,
+    warehouseIds: [...form.value.warehouseIds],
+    priority: form.value.priority,
+  };
 
   if (isEdit.value) {
     channelStore.updateChannel(editId.value, payload);
@@ -190,9 +215,11 @@ const getPriorityLabel = (priority: number) => {
   if (priority <= 10) return `P${priority} 中`;
   return `P${priority} 低`;
 };
-const filteredWarehouses = computed(() =>
-  form.value.companyId ? warehouseStore.getWarehousesByCompany(form.value.companyId) : [],
-);
+const filteredWarehouses = computed(() => {
+  if (!form.value.companyIds.length) return [];
+  const set = new Set(form.value.companyIds);
+  return warehouseStore.warehouses.filter(w => set.has(w.companyId));
+});
 
 const companyFilterOptions = computed(() =>
   companies.value.map(c => ({ value: c.id, label: `${c.name}（${c.code}）` })),
@@ -268,20 +295,39 @@ const listRows = computed(() => {
           />
         </ElFormItem>
         <ElFormItem label="所属主体">
-          <ElSelect v-model="form.companyId" style="width: 100%" filterable @change="handleCompanyChange">
-            <ElOption
-              v-for="c in companies"
-              :key="c.id"
-              :label="`${c.name}（${c.code}）`"
-              :value="c.id"
-            />
-          </ElSelect>
+          <div class="wh-box">
+            <div class="wh-box__bar">
+              <span class="wh-box__hint">
+                已选 {{ form.companyIds.length }}/{{ companies.length }} · 可多选；仓库须最终同属一个主体
+              </span>
+              <ElButton link size="small" :disabled="!form.companyIds.length" @click="clearCompanies">
+                清空已选
+              </ElButton>
+            </div>
+            <div v-if="companies.length" class="wh-box__list">
+              <div
+                v-for="(c, idx) in companies"
+                :key="`${c.code}__${c.id}__${idx}`"
+                class="wh-box__item"
+                role="checkbox"
+                :aria-checked="isCompanyChecked(c.id)"
+                tabindex="0"
+                @click="toggleCompany(c.id)"
+                @keydown.enter.prevent="toggleCompany(c.id)"
+                @keydown.space.prevent="toggleCompany(c.id)"
+              >
+                <span class="wh-box__check" :class="{ on: isCompanyChecked(c.id) }" />
+                <span class="wh-box__text">{{ c.name }}（{{ c.code }}）</span>
+              </div>
+            </div>
+            <div v-else class="wh-box__empty">暂无主体，请先到「公司主体」新增</div>
+          </div>
         </ElFormItem>
         <ElFormItem label="可用仓库">
           <div class="wh-box">
             <div class="wh-box__bar">
               <span class="wh-box__hint">
-                已选 {{ form.warehouseIds.length }}/{{ filteredWarehouses.length }} · 可逐个勾/取消；旧数据若全勾了，先点清空
+                已选 {{ form.warehouseIds.length }}/{{ filteredWarehouses.length }} · 可逐个勾/取消；勿跨主体混选仓库
               </span>
               <ElButton link size="small" :disabled="!form.warehouseIds.length" @click="clearWarehouses">
                 清空已选
@@ -304,7 +350,7 @@ const listRows = computed(() => {
               </div>
             </div>
             <div v-else class="wh-box__empty">
-              {{ form.companyId ? '该主体下暂无仓库' : '请先选择所属主体' }}
+              {{ form.companyIds.length ? '已选主体下暂无仓库' : '请先勾选所属主体' }}
             </div>
           </div>
         </ElFormItem>
