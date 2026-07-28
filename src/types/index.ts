@@ -32,11 +32,15 @@ export interface Warehouse {
 // 渠道信息
 export interface Channel {
   id: string;
+  /** 渠道编码，唯一标识 */
+  code: string;
   name: string;
   warehouseIds: string[];
-  /** 数字越小优先级越高，默认 100；仅在同一主体内比较 */
+  /** 1–20，数字越小优先级越高；仅在同一主体内比较 */
   priority: number;
   companyId: string;
+  /** 停用后不参与要货占库存与渠道下拉 */
+  enabled: boolean;
 }
 
 // 要货/销货明细行
