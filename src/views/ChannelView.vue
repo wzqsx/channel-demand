@@ -22,6 +22,7 @@ import { useCompanyStore } from '../stores/company';
 import { bootstrapStores } from '../stores/bootstrap';
 import type { Channel } from '../types';
 import { readExcelFromEvent, exportRows, downloadTemplate, cell, cellNum } from '../utils/excel';
+import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyFilter';
 
 const channelStore = useChannelStore();
 const warehouseStore = useWarehouseStore();
@@ -29,7 +30,7 @@ const companyStore = useCompanyStore();
 const { channels } = storeToRefs(channelStore);
 const { companies } = storeToRefs(companyStore);
 
-const filterCompanyIds = ref<string[]>([]);
+const filterCompanyIds = useRememberedCompanyFilter('channels');
 const dialogVisible = ref(false);
 const isEdit = ref(false);
 /** 右侧当前浏览的主体（点左侧切换，不清空已选仓库） */

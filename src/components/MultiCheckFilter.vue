@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ElPopover, ElButton } from 'element-plus';
+import { computed, ref } from 'vue';
+import { ElPopover, ElButton, ElInput } from 'element-plus';
 
 /**
- * 多选筛选：自定义勾选行，避免重复 id / Element Plus Checkbox 导致点一个像全选
+ * 多选筛选：自定义勾选行，支持搜索
  */
 const props = withDefaults(
   defineProps<{
@@ -17,9 +18,19 @@ const props = withDefaults(
 );
 
 const model = defineModel<string[]>({ default: () => [] });
+const keyword = ref('');
+
+const filteredOptions = computed(() => {
+  const q = keyword.value.trim().toLowerCase();
+  if (!q) return props.options;
+  return props.options.filter(
+    o => o.label.toLowerCase().includes(q) || String(o.value).toLowerCase().includes(q),
+  );
+});
 
 const selectAll = () => {
-  model.value = props.options.map(o => o.value);
+  const ids = filteredOptions.value.map(o => o.value);
+  model.value = [...new Set([...model.value, ...ids])];
 };
 
 const clearAll = () => {
@@ -51,6 +62,13 @@ const toggleOne = (value: string) => {
     </template>
 
     <div class="mcf" @click.stop>
+      <ElInput
+        v-model="keyword"
+        size="small"
+        clearable
+        placeholder="搜索…"
+        class="mcf__search"
+      />
       <div class="mcf__bar">
         <ElButton link type="primary" size="small" @click="selectAll">全选</ElButton>
         <ElButton link size="small" @click="clearAll">清空</ElButton>
@@ -58,7 +76,7 @@ const toggleOne = (value: string) => {
       </div>
       <div class="mcf__list">
         <div
-          v-for="(o, idx) in options"
+          v-for="(o, idx) in filteredOptions"
           :key="`${o.value}__${idx}`"
           class="mcf__item"
           role="checkbox"
@@ -72,7 +90,9 @@ const toggleOne = (value: string) => {
           <span class="mcf__text">{{ o.label }}</span>
         </div>
       </div>
-      <div v-if="!options.length" class="mcf__empty">暂无可选项</div>
+      <div v-if="!filteredOptions.length" class="mcf__empty">
+        {{ options.length ? '无匹配项' : '暂无可选项' }}
+      </div>
     </div>
   </ElPopover>
 </template>
@@ -93,6 +113,9 @@ const toggleOne = (value: string) => {
 .mcf-btn__caret {
   color: var(--erp-text-muted);
   margin-left: 6px;
+}
+.mcf__search {
+  margin-bottom: 8px;
 }
 .mcf__bar {
   display: flex;

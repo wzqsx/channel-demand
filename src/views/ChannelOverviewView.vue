@@ -21,6 +21,7 @@ import { useCompanyStore } from '../stores/company';
 import { bootstrapStores } from '../stores/bootstrap';
 import { exportRows } from '../utils/excel';
 import { periodLabel, type PeriodGrain } from '../utils/week';
+import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyFilter';
 
 const requisitionStore = useRequisitionStore();
 const channelStore = useChannelStore();
@@ -28,7 +29,7 @@ const companyStore = useCompanyStore();
 
 const grain = ref<PeriodGrain>('week');
 const year = ref(new Date().getFullYear());
-const companyIds = ref<string[]>([]);
+const companyIds = useRememberedCompanyFilter('channel-overview');
 const onlyWithSales = ref(true);
 const rankFilter = ref<'all' | 'excess' | 'top' | 'low'>('all');
 

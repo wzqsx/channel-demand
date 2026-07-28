@@ -24,12 +24,13 @@ import { useWarehouseStore } from '../stores/warehouse';
 import { useProductStore } from '../stores/product';
 import { useCompanyStore } from '../stores/company';
 import { bootstrapStores } from '../stores/bootstrap';
-import type { Requisition, ImportRequisitionData, DemandSalesCompareRow } from '../types';
+import type { Requisition, ImportRequisitionData } from '../types';
 import { weekStartSaturday, weekLabel } from '../utils/week';
 import { exportRows, downloadTemplate, readExcelFromEvent, cell, cellNum } from '../utils/excel';
 import { assertRequisitionScope, getChannelAllowedWarehouses } from '../utils/companyScope';
 import { getBottleEquivalentStock } from '../utils/packStock';
 import { formatProductQty } from '../utils/qtyDisplay';
+import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyFilter';
 
 const router = useRouter();
 const requisitionStore = useRequisitionStore();
@@ -39,7 +40,7 @@ const productStore = useProductStore();
 const companyStore = useCompanyStore();
 
 const filterWeek = ref(weekStartSaturday());
-const filterCompanyIds = ref<string[]>([]);
+const filterCompanyIds = useRememberedCompanyFilter('requisitions');
 
 const form = ref({
   companyId: '',
@@ -63,11 +64,6 @@ const stockCheckResults = ref<{
 
 const detailVisible = ref(false);
 const detailRow = ref<Requisition | null>(null);
-
-const salesDialogVisible = ref(false);
-const salesTargetId = ref('');
-const salesImportData = ref<ImportRequisitionData[]>([]);
-const compareRows = ref<DemandSalesCompareRow[]>([]);
 
 const filteredChannels = computed(() => {
   if (!form.value.companyId) return [];
@@ -167,12 +163,6 @@ const handleImport = async (event: Event) => {
   importData.value = parseExcelRows(rows);
   stockCheckResults.value = [];
   ElMessage.success(`已导入 ${importData.value.length} 行要货`);
-};
-
-const handleSalesImport = async (event: Event) => {
-  const rows = await readExcelFromEvent(event);
-  salesImportData.value = parseExcelRows(rows);
-  ElMessage.success(`已导入销货 ${salesImportData.value.length} 行`);
 };
 
 const downloadDemandTemplate = () => {
@@ -346,34 +336,15 @@ const openDetail = (row: Requisition) => {
   detailVisible.value = true;
 };
 
-const openSalesDialog = (row: Requisition) => {
-  salesTargetId.value = row.id;
-  salesImportData.value = (row.salesItems || []).map(i => ({
-    productCode: i.productCode,
-    productName: i.productName,
-    quantity: i.quantity,
-    remark: i.remark,
-  }));
-  compareRows.value = row.salesItems?.length
-    ? requisitionStore.compareDemandVsSales(row.id)
-    : [];
-  salesDialogVisible.value = true;
-};
-
-const saveSales = () => {
-  if (!salesImportData.value.length) {
-    ElMessage.error('请导入本周实际销货数据');
-    return;
-  }
-  requisitionStore.saveSalesItems(salesTargetId.value, salesImportData.value);
-  compareRows.value = requisitionStore.compareDemandVsSales(salesTargetId.value);
-  ElMessage.success('销货数据已保存，可查看虚报核对');
-};
-
-const refreshCompare = () => {
-  if (salesTargetId.value) {
-    compareRows.value = requisitionStore.compareDemandVsSales(salesTargetId.value);
-  }
+const goSalesCompare = (row: Requisition) => {
+  router.push({
+    path: '/sales-compare',
+    query: {
+      week: row.weekStart,
+      companyId: row.companyId || undefined,
+      requisitionId: row.id,
+    },
+  });
 };
 
 const getChannelName = (id: string) => channelStore.getChannelById(id)?.name || id;
@@ -388,17 +359,6 @@ const getStatusTag = (status: string) => {
     rejected: { label: '已拒绝', type: 'danger' },
   };
   return tags[status] || { label: status, type: 'info' };
-};
-
-const compareStatusTag = (status: DemandSalesCompareRow['status']) => {
-  const map: Record<string, { label: string; type: 'success' | 'warning' | 'danger' | 'info' }> = {
-    accurate: { label: '正常', type: 'success' },
-    overclaim: { label: '疑似虚报', type: 'danger' },
-    underclaim: { label: '要货偏低', type: 'warning' },
-    no_sales: { label: '无销货', type: 'danger' },
-    no_demand: { label: '未要货有销', type: 'info' },
-  };
-  return map[status] || { label: status, type: 'info' };
 };
 
 const formatDate = (dateStr: string) => new Date(dateStr).toLocaleString('zh-CN');
@@ -416,7 +376,6 @@ const goShortageAlert = () => {
 
 const triggerFile = (refEl: HTMLInputElement | null) => refEl?.click();
 const demandFileRef = ref<HTMLInputElement | null>(null);
-const salesFileRef = ref<HTMLInputElement | null>(null);
 </script>
 
 <template>
@@ -508,7 +467,7 @@ const salesFileRef = ref<HTMLInputElement | null>(null);
               link
               type="warning"
               size="small"
-              @click="openSalesDialog(row as Requisition)"
+              @click="goSalesCompare(row as Requisition)"
             >录销货</ElButton>
             <ElButton link type="info" size="small" @click="handleDelete(row.id)">删除</ElButton>
           </template>
@@ -597,7 +556,11 @@ const salesFileRef = ref<HTMLInputElement | null>(null);
         <ElTable v-if="importData.length" :data="importData" border size="small" max-height="220">
           <ElTableColumn prop="productCode" label="商品编码" width="120" />
           <ElTableColumn prop="productName" label="商品名称" min-width="160" />
-          <ElTableColumn prop="quantity" label="数量" width="90" />
+          <ElTableColumn label="数量" width="120" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ formatProductQty(row.quantity, row.productCode) }}
+            </template>
+          </ElTableColumn>
           <ElTableColumn prop="remark" label="备注" min-width="120" />
         </ElTable>
         <div v-else class="empty-tip">请导入要货 Excel</div>
@@ -655,64 +618,14 @@ const salesFileRef = ref<HTMLInputElement | null>(null);
         <ElTable :data="detailRow.items" border size="small" max-height="400">
           <ElTableColumn prop="productCode" label="编码" width="120" />
           <ElTableColumn prop="productName" label="名称" min-width="160" />
-          <ElTableColumn prop="quantity" label="要货数量" width="100" />
+          <ElTableColumn label="要货数量" width="120" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ formatProductQty(row.quantity, row.productCode) }}
+            </template>
+          </ElTableColumn>
           <ElTableColumn prop="remark" label="备注" min-width="120" />
         </ElTable>
       </template>
-    </ElDialog>
-
-    <!-- 录销货 -->
-    <ElDialog v-model="salesDialogVisible" title="录入本周实际销货" width="960px" destroy-on-close>
-      <div class="import-block">
-        <div class="import-block__head">
-          <span>实际销货明细</span>
-          <div>
-            <input ref="salesFileRef" type="file" accept=".xlsx,.xls" class="hidden-file" @change="handleSalesImport" />
-            <ElButton size="small" @click="triggerFile(salesFileRef)">导入销货 Excel</ElButton>
-            <HelpTip
-              inline
-              title="销货说明"
-              content="用于核对渠道是否虚报要货。建议阈值：要货 ≥ 销货 × 1.3 标为「疑似虚报」。\nExcel 列同要货：商品编码、商品名称、数量、备注。"
-            />
-            <ElButton size="small" type="primary" @click="saveSales">保存并核对</ElButton>
-            <ElButton size="small" @click="refreshCompare">刷新核对</ElButton>
-          </div>
-        </div>
-        <ElTable v-if="salesImportData.length" :data="salesImportData" border size="small" max-height="200">
-          <ElTableColumn prop="productCode" label="编码" width="120" />
-          <ElTableColumn prop="productName" label="名称" min-width="140" />
-          <ElTableColumn prop="quantity" label="销货数量" width="100" />
-          <ElTableColumn prop="remark" label="备注" />
-        </ElTable>
-        <div v-else class="empty-tip">请导入本周实际销货</div>
-      </div>
-
-      <div v-if="compareRows.length" class="import-block">
-        <div class="import-block__head"><span>要货 vs 销货</span></div>
-        <ElTable :data="compareRows" border size="small" max-height="280">
-          <ElTableColumn prop="productCode" label="编码" width="100" />
-          <ElTableColumn prop="productName" label="名称" min-width="120" />
-          <ElTableColumn prop="demandQty" label="要货" width="80" />
-          <ElTableColumn prop="salesQty" label="销货" width="80" />
-          <ElTableColumn prop="overClaim" label="虚报量" width="80">
-            <template #default="{ row }">
-              <span :class="{ danger: row.overClaim > 0 }">{{ row.overClaim }}</span>
-            </template>
-          </ElTableColumn>
-          <ElTableColumn label="要货/销货" width="100">
-            <template #default="{ row }">
-              {{ row.ratio === Infinity ? '∞' : row.ratio }}
-            </template>
-          </ElTableColumn>
-          <ElTableColumn label="结论" width="110">
-            <template #default="{ row }">
-              <ElTag size="small" :type="compareStatusTag(row.status).type">
-                {{ compareStatusTag(row.status).label }}
-              </ElTag>
-            </template>
-          </ElTableColumn>
-        </ElTable>
-      </div>
     </ElDialog>
   </PageShell>
 </template>

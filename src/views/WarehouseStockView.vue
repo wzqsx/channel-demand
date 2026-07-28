@@ -29,6 +29,7 @@ import type { WarehouseStock, CustomFieldConfig, FieldType, ImportWarehouseStock
 import { weekStartSaturday, weekLabel } from '../utils/week';
 import { readExcelFromEvent, exportRows, downloadTemplate, cell, cellNum } from '../utils/excel';
 import { formatProductQty } from '../utils/qtyDisplay';
+import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyFilter';
 
 const stockStore = useWarehouseStockStore();
 const warehouseStore = useWarehouseStore();
@@ -51,7 +52,7 @@ const form = ref({
 const editId = ref('');
 
 const searchWarehouseIds = ref<string[]>([]);
-const searchCompanyIds = ref<string[]>([]);
+const searchCompanyIds = useRememberedCompanyFilter('warehouse-stocks');
 const importWeekStart = ref(weekStartSaturday());
 
 const importInputRef = ref<HTMLInputElement | null>(null);

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import {
   ElTable,
@@ -22,11 +22,13 @@ import { useProductStore } from '../stores/product';
 import { bootstrapStores } from '../stores/bootstrap';
 import type { Product } from '../types';
 import { readExcelFromEvent, exportRows, downloadTemplate, cell, cellNum } from '../utils/excel';
+import { formatProductQty } from '../utils/qtyDisplay';
 
 const store = useProductStore();
 const { products } = storeToRefs(store);
 const dialogVisible = ref(false);
 const isEdit = ref(false);
+const keyword = ref('');
 const form = ref({
   code: '',
   name: '',
@@ -43,6 +45,17 @@ const form = ref({
 const editId = ref('');
 const showWarning = ref(false);
 const importRef = ref<HTMLInputElement | null>(null);
+
+const listRows = computed(() => {
+  const q = keyword.value.trim().toLowerCase();
+  if (!q) return products.value;
+  return products.value.filter(
+    p =>
+      p.code.toLowerCase().includes(q) ||
+      p.name.toLowerCase().includes(q) ||
+      (p.spec || '').toLowerCase().includes(q),
+  );
+});
 
 const PRODUCT_HEADERS = [
   '商品编码', '商品名称', '规格', '瓶单位', '箱单位', '每箱瓶数', '预警阈值',
@@ -205,12 +218,6 @@ const getStockStatus = (product: Product) => {
   return { type: 'success' as const, text: '库存充足' };
 };
 
-const formatBoxStock = (product: Product) => {
-  const boxes = Math.floor(product.stock / product.bottlesPerBox);
-  const bottles = product.stock % product.bottlesPerBox;
-  return `${boxes}箱 ${bottles}${product.bottleUnit}`;
-};
-
 const getCombineInfo = (product: Product) => {
   if (!product.isCombined || !product.combineProductCode) return '';
   const baseProduct = store.getProductByCode(product.combineProductCode);
@@ -226,6 +233,13 @@ const getCombineInfo = (product: Product) => {
   >
     <template #toolbar>
       <input ref="importRef" type="file" accept=".xlsx,.xls" class="hidden-file" @change="handleImport" />
+      <ElInput
+        v-model="keyword"
+        size="small"
+        clearable
+        placeholder="搜索编码/名称/规格"
+        style="width: 200px"
+      />
       <ElButton type="primary" size="small" @click="openDialog()">添加商品</ElButton>
       <ElButton size="small" @click="importRef?.click()">导入</ElButton>
       <ElButton size="small" @click="handleExport">导出</ElButton>
@@ -240,7 +254,7 @@ const getCombineInfo = (product: Product) => {
       </div>
 
       <ElTable
-        :data="products"
+        :data="listRows"
         border
         size="small"
         stripe
@@ -256,12 +270,9 @@ const getCombineInfo = (product: Product) => {
         <ElTableColumn prop="bottlesPerBox" label="每箱数量" width="90" align="center" />
         <ElTableColumn label="当前库存" width="150">
           <template #default="{ row }">
-            <div>
-              <span :class="{ 'stock-warning': store.isWarning(row as Product) }">
-                {{ (row as Product).stock }} {{ (row as Product).bottleUnit }}
-              </span>
-              <span class="stock-box">({{ formatBoxStock(row as Product) }})</span>
-            </div>
+            <span :class="{ 'stock-warning': store.isWarning(row as Product) }">
+              {{ formatProductQty((row as Product).stock, (row as Product).code) }}
+            </span>
           </template>
         </ElTableColumn>
         <ElTableColumn label="预警阈值" width="100">

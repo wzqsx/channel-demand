@@ -21,13 +21,14 @@ import { useCompanyStore } from '../stores/company';
 import { bootstrapStores } from '../stores/bootstrap';
 import type { Warehouse } from '../types';
 import { readExcelFromEvent, exportRows, downloadTemplate, cell } from '../utils/excel';
+import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyFilter';
 
 const store = useWarehouseStore();
 const companyStore = useCompanyStore();
 const { warehouses } = storeToRefs(store);
 const { companies } = storeToRefs(companyStore);
 
-const filterCompanyIds = ref<string[]>([]);
+const filterCompanyIds = useRememberedCompanyFilter('warehouses');
 const dialogVisible = ref(false);
 const isEdit = ref(false);
 const form = ref({

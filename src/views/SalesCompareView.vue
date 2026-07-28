@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, nextTick } from 'vue';
+import { useRoute } from 'vue-router';
 import {
   ElTable,
   ElTableColumn,
@@ -25,14 +26,17 @@ import { bootstrapStores } from '../stores/bootstrap';
 import type { DemandSalesCompareRow, ImportRequisitionData, Requisition } from '../types';
 import { weekStartSaturday, weekLabel } from '../utils/week';
 import { readExcelFromEvent, exportRows, downloadTemplate, cell, cellNum } from '../utils/excel';
+import { formatProductQty } from '../utils/qtyDisplay';
+import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyFilter';
 
+const route = useRoute();
 const requisitionStore = useRequisitionStore();
 const channelStore = useChannelStore();
 const companyStore = useCompanyStore();
 const productStore = useProductStore();
 
 const weekStart = ref(weekStartSaturday());
-const companyIds = ref<string[]>([]);
+const companyIds = useRememberedCompanyFilter('sales-compare');
 
 const companyFilterOptions = computed(() =>
   companyStore.companies.map(c => ({ value: c.id, label: c.name })),
@@ -47,8 +51,22 @@ const editTarget = ref<Requisition | null>(null);
 const salesRows = ref<ImportRequisitionData[]>([]);
 const salesFileRef = ref<HTMLInputElement | null>(null);
 
-onMounted(() => {
+onMounted(async () => {
   bootstrapStores();
+  const qWeek = route.query.week;
+  if (typeof qWeek === 'string' && qWeek) weekStart.value = weekStartSaturday(qWeek);
+  const qCompanies = route.query.companyIds;
+  if (typeof qCompanies === 'string' && qCompanies) {
+    companyIds.value = qCompanies.split(',').filter(Boolean);
+  } else if (typeof route.query.companyId === 'string' && route.query.companyId) {
+    companyIds.value = [route.query.companyId];
+  }
+  await nextTick();
+  const qReq = route.query.requisitionId;
+  if (typeof qReq === 'string' && qReq) {
+    const hit = summary.value.find(r => r.requisitionId === qReq);
+    if (hit) openEditSales(hit);
+  }
 });
 
 type SummaryRow = {
@@ -291,14 +309,6 @@ const compareTag = (status: DemandSalesCompareRow['status']) => {
   };
   return map[status] || { label: status, type: 'info' };
 };
-
-const demandHint = (productCode: string) => {
-  if (!editTarget.value) return '';
-  const qty = editTarget.value.items
-    .filter(i => i.productCode === productCode)
-    .reduce((s, i) => s + i.quantity, 0);
-  return qty ? `要货 ${qty}` : '';
-};
 </script>
 
 <template>
@@ -351,9 +361,13 @@ const demandHint = (productCode: string) => {
         <ElTableColumn label="渠道" width="120">
           <template #default="{ row }">{{ getChannelName((row as SummaryRow).channelId) }}</template>
         </ElTableColumn>
-        <ElTableColumn prop="demandTotal" label="要货合计" width="100" />
-        <ElTableColumn prop="salesTotal" label="销货合计" width="100" />
-        <ElTableColumn prop="overClaimTotal" label="虚报量" width="90">
+        <ElTableColumn label="要货合计(瓶)" width="110">
+          <template #default="{ row }">{{ (row as SummaryRow).demandTotal }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="销货合计(瓶)" width="110">
+          <template #default="{ row }">{{ (row as SummaryRow).salesTotal }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="虚报量(瓶)" width="100">
           <template #default="{ row }">
             <span :class="{ danger: (row as SummaryRow).overClaimTotal > 0 }">
               {{ (row as SummaryRow).overClaimTotal }}
@@ -468,9 +482,16 @@ const demandHint = (productCode: string) => {
               />
             </template>
           </ElTableColumn>
-          <ElTableColumn label="要货参考" width="100">
+          <ElTableColumn label="要货参考" width="120" show-overflow-tooltip>
             <template #default="{ row }">
-              <span class="demand-ref">{{ demandHint((row as ImportRequisitionData).productCode) }}</span>
+              <span class="demand-ref">{{
+                formatProductQty(
+                  editTarget?.items
+                    .filter(i => i.productCode === (row as ImportRequisitionData).productCode)
+                    .reduce((s, i) => s + i.quantity, 0) || 0,
+                  (row as ImportRequisitionData).productCode,
+                )
+              }}</span>
             </template>
           </ElTableColumn>
           <ElTableColumn label="备注" min-width="120">
@@ -497,9 +518,21 @@ const demandHint = (productCode: string) => {
       <ElTable :data="detailRows" border size="small" max-height="420">
         <ElTableColumn prop="productCode" label="编码" width="110" />
         <ElTableColumn prop="productName" label="名称" min-width="140" />
-        <ElTableColumn prop="demandQty" label="要货" width="80" />
-        <ElTableColumn prop="salesQty" label="销货" width="80" />
-        <ElTableColumn prop="overClaim" label="虚报量" width="80" />
+        <ElTableColumn label="要货" width="110" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ formatProductQty((row as DemandSalesCompareRow).demandQty, (row as DemandSalesCompareRow).productCode) }}
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="销货" width="110" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ formatProductQty((row as DemandSalesCompareRow).salesQty, (row as DemandSalesCompareRow).productCode) }}
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="虚报量" width="110" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ formatProductQty((row as DemandSalesCompareRow).overClaim, (row as DemandSalesCompareRow).productCode) }}
+          </template>
+        </ElTableColumn>
         <ElTableColumn label="要货/销货" width="100">
           <template #default="{ row }">
             {{ (row as DemandSalesCompareRow).ratio === Infinity ? '∞' : (row as DemandSalesCompareRow).ratio }}

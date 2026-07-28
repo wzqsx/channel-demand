@@ -23,6 +23,7 @@ import { weekStartSaturday, weekLabel } from '../utils/week';
 import { buildShortageAndWarnings, type AlertKind, type ShortageAlertRow } from '../utils/shortageAlert';
 import { formatProductQty } from '../utils/qtyDisplay';
 import { exportRows } from '../utils/excel';
+import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyFilter';
 
 const route = useRoute();
 const companyStore = useCompanyStore();
@@ -30,7 +31,7 @@ const warehouseStore = useWarehouseStore();
 const { companies } = storeToRefs(companyStore);
 
 const weekStart = ref(weekStartSaturday());
-const companyIds = ref<string[]>([]);
+const companyIds = useRememberedCompanyFilter('shortage-alert');
 const tab = ref<'all' | AlertKind>('all');
 
 const companyFilterOptions = computed(() =>
