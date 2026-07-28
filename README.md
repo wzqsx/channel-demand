@@ -31,12 +31,32 @@ brew -v
 brew install node
 ```
 
-验证（应能看到版本号，Node 建议 18+）：
+验证（必须能看到版本号，Node 建议 18+）：
 
 ```bash
 node -v
 npm -v
 ```
+
+若出现 `command not found: npm`（或 `node`），说明 Node 还没装好，**先不要跑 autostart**，在本机终端按顺序执行：
+
+```bash
+# 1）确认有 Homebrew
+brew -v
+
+# 2）安装 Node
+brew install node
+
+# 3）Apple Silicon 常见：把 brew 加入 PATH，然后重开终端或执行下一行
+echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+eval "$(/opt/homebrew/bin/brew shellenv)"
+
+# 4）再验证（要有版本号）
+node -v
+npm -v
+```
+
+仍不行：关闭终端重开，或打开 https://nodejs.org 安装 LTS，装完再开新终端验证。
 
 #### 1.3 安装 Git（一般 Mac 自带；没有再装）
 
