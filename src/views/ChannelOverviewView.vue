@@ -27,7 +27,7 @@ const companyStore = useCompanyStore();
 
 const grain = ref<PeriodGrain>('week');
 const year = ref(new Date().getFullYear());
-const companyId = ref('');
+const companyIds = ref<string[]>([]);
 const onlyWithSales = ref(true);
 const rankFilter = ref<'all' | 'excess' | 'top' | 'low'>('all');
 
@@ -48,7 +48,7 @@ const rows = computed(() => {
   let list = requisitionStore.channelOverview({
     grain: grain.value,
     year: year.value,
-    companyId: companyId.value || undefined,
+    companyIds: companyIds.value.length ? companyIds.value : undefined,
     onlyWithSales: onlyWithSales.value,
   });
   if (rankFilter.value === 'excess') list = list.filter(r => r.isExcess);
@@ -159,7 +159,18 @@ const handleExport = () => {
       <ElSelect v-model="year" size="small" style="width: 110px">
         <ElOption v-for="y in yearOptions" :key="y" :label="`${y}年`" :value="y" />
       </ElSelect>
-      <ElSelect v-model="companyId" clearable placeholder="全部主体" size="small" style="width: 130px">
+      <ElSelect
+        v-model="companyIds"
+        multiple
+        clearable
+        collapse-tags
+        collapse-tags-tooltip
+        :max-collapse-tags="2"
+        filterable
+        placeholder="主体(可多选)"
+        size="small"
+        style="width: 200px"
+      >
         <ElOption
           v-for="c in companyStore.companies"
           :key="c.id"
