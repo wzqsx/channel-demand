@@ -301,12 +301,19 @@ export const useRequisitionStore = defineStore('requisition', () => {
     grain: PeriodGrain;
     year?: number;
     companyId?: string;
+    /** 多主体筛选；优先于 companyId */
+    companyIds?: string[];
     /** 仅统计已录销货的单据；false 则含未录（销货按0） */
     onlyWithSales?: boolean;
   }) => {
     const grain = opts.grain;
     const onlyWithSales = opts.onlyWithSales !== false;
     const year = opts.year;
+    const companySet = opts.companyIds?.length
+      ? new Set(opts.companyIds)
+      : opts.companyId
+        ? new Set([opts.companyId])
+        : null;
 
     type Agg = {
       period: string;
@@ -321,7 +328,7 @@ export const useRequisitionStore = defineStore('requisition', () => {
 
     requisitions.value
       .filter(r => r.status === 'approved')
-      .filter(r => !opts.companyId || r.companyId === opts.companyId)
+      .filter(r => !companySet || companySet.has(r.companyId))
       .forEach(r => {
         const y = new Date(r.weekStart + 'T00:00:00').getFullYear();
         if (year && y !== year) return;
