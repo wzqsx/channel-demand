@@ -78,7 +78,7 @@ cat > "$PLIST" <<EOF
     <string>dev</string>
     <string>--</string>
     <string>--host</string>
-    <string>127.0.0.1</string>
+    <string>localhost</string>
     <string>--port</string>
     <string>5173</string>
   </array>
@@ -113,6 +113,7 @@ echo "  配置文件: ${PLIST}"
 echo "  日志:     ${OUT_LOG}"
 echo "            ${ERR_LOG}"
 echo ""
-echo "浏览器打开: http://127.0.0.1:5173/"
+echo "浏览器打开: http://localhost:5173/"
+echo "（请固定用 localhost，不要用 127.0.0.1，否则会当成另一套空数据）"
 echo "取消自启:   npm run autostart:off"
 echo ""

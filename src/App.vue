@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
+import { ElButton, ElMessage, ElMessageBox } from 'element-plus';
+import { downloadAppDataBackup, importAppDataBackup } from './utils/dataBackup';
 
 const router = useRouter();
 const route = useRoute();
+const importInputRef = ref<HTMLInputElement | null>(null);
 
 const menuGroups = [
   {
@@ -43,6 +46,42 @@ const currentTitle = computed(() => {
   }
   return '渠道要货';
 });
+
+const handleExportData = () => {
+  const n = downloadAppDataBackup();
+  ElMessage.success(n ? `已导出 ${n} 类业务数据` : '当前没有可导出的本地数据');
+};
+
+const handleImportClick = () => importInputRef.value?.click();
+
+const handleImportFile = async (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  try {
+    await ElMessageBox.confirm(
+      '导入会覆盖本浏览器地址下的现有数据，建议先点「导出备份」。是否继续？',
+      '恢复数据',
+      { type: 'warning', confirmButtonText: '确认导入', cancelButtonText: '取消' },
+    );
+  } catch {
+    return;
+  }
+  try {
+    const text = await file.text();
+    const json = JSON.parse(text);
+    const result = importAppDataBackup(json);
+    if (!result.ok) {
+      ElMessage.error(result.message);
+      return;
+    }
+    ElMessage.success(`已恢复 ${result.keys.length} 类数据，正在刷新…`);
+    setTimeout(() => location.reload(), 500);
+  } catch {
+    ElMessage.error('备份文件无法解析，请确认是本系统导出的 JSON');
+  }
+};
 </script>
 
 <template>
@@ -75,6 +114,17 @@ const currentTitle = computed(() => {
     <div class="main">
       <header class="topbar">
         <div class="topbar-title">{{ currentTitle }}</div>
+        <div class="topbar-actions">
+          <input
+            ref="importInputRef"
+            type="file"
+            accept="application/json,.json"
+            class="hidden-file"
+            @change="handleImportFile"
+          />
+          <ElButton size="small" @click="handleExportData">导出备份</ElButton>
+          <ElButton size="small" @click="handleImportClick">导入备份</ElButton>
+        </div>
       </header>
       <main class="content">
         <router-view />
@@ -184,6 +234,8 @@ const currentTitle = computed(() => {
   flex-shrink: 0;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 0 20px;
   background: #fff;
   border-bottom: 1px solid var(--erp-border);
@@ -193,6 +245,16 @@ const currentTitle = computed(() => {
   font-size: 14px;
   font-weight: 600;
   color: var(--erp-text);
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hidden-file {
+  display: none;
 }
 
 .content {
