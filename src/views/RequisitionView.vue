@@ -38,7 +38,7 @@ const productStore = useProductStore();
 const companyStore = useCompanyStore();
 
 const filterWeek = ref(weekStartSaturday());
-const filterCompanyId = ref('');
+const filterCompanyIds = ref<string[]>([]);
 
 const form = ref({
   companyId: '',
@@ -84,7 +84,7 @@ const filteredWarehouses = computed(() => {
 const listRows = computed(() => {
   return requisitionStore.requisitions.filter(r => {
     if (filterWeek.value && r.weekStart !== filterWeek.value) return false;
-    if (filterCompanyId.value && r.companyId !== filterCompanyId.value) return false;
+    if (filterCompanyIds.value.length && !filterCompanyIds.value.includes(r.companyId)) return false;
     return true;
   });
 });
@@ -95,7 +95,7 @@ onMounted(() => {
 
 const openDialog = () => {
   form.value = {
-    companyId: filterCompanyId.value || '',
+    companyId: filterCompanyIds.value.length === 1 ? filterCompanyIds.value[0] : '',
     channelId: '',
     warehouseIds: [],
     weekStart: filterWeek.value || weekStartSaturday(),
@@ -389,7 +389,8 @@ const goShortageAlert = () => {
     path: '/shortage-alert',
     query: {
       week: filterWeek.value,
-      companyId: filterCompanyId.value || undefined,
+      companyId: filterCompanyIds.value.length === 1 ? filterCompanyIds.value[0] : undefined,
+      companyIds: filterCompanyIds.value.length > 1 ? filterCompanyIds.value.join(',') : undefined,
     },
   });
 };
@@ -415,11 +416,16 @@ const salesFileRef = ref<HTMLInputElement | null>(null);
         @change="(v: string) => { if (v) filterWeek = weekStartSaturday(v) }"
       />
       <ElSelect
-        v-model="filterCompanyId"
+        v-model="filterCompanyIds"
+        multiple
         clearable
-        placeholder="全部主体"
+        collapse-tags
+        collapse-tags-tooltip
+        :max-collapse-tags="2"
+        filterable
+        placeholder="主体(可多选)"
         size="small"
-        style="width: 140px"
+        style="width: 200px"
       >
         <ElOption
           v-for="c in companyStore.companies"
@@ -533,8 +539,24 @@ const salesFileRef = ref<HTMLInputElement | null>(null);
             </ElSelect>
           </ElFormItem>
           <ElFormItem label="仓库" required>
-            <ElSelect v-model="form.warehouseIds" multiple placeholder="参与验库存的仓库" style="width: 100%">
-              <ElOption v-for="w in filteredWarehouses" :key="w.id" :label="w.name" :value="w.id" />
+            <ElSelect
+              :key="form.channelId || 'no-channel'"
+              v-model="form.warehouseIds"
+              multiple
+              filterable
+              clearable
+              collapse-tags
+              collapse-tags-tooltip
+              :max-collapse-tags="3"
+              placeholder="参与验库存的仓库(可多选)"
+              style="width: 100%"
+            >
+              <ElOption
+                v-for="w in filteredWarehouses"
+                :key="w.id"
+                :label="`${w.name}（${w.code}）`"
+                :value="w.id"
+              />
             </ElSelect>
           </ElFormItem>
         </div>

@@ -31,7 +31,7 @@ const warehouseStore = useWarehouseStore();
 const { companies } = storeToRefs(companyStore);
 
 const weekStart = ref(weekStartSaturday());
-const companyId = ref('');
+const companyIds = ref<string[]>([]);
 const tab = ref<'all' | AlertKind>('all');
 
 onMounted(() => {
@@ -39,14 +39,19 @@ onMounted(() => {
 
   const qWeek = route.query.week;
   if (typeof qWeek === 'string' && qWeek) weekStart.value = weekStartSaturday(qWeek);
-  const qCompany = route.query.companyId;
-  if (typeof qCompany === 'string') companyId.value = qCompany;
+  const qCompanies = route.query.companyIds;
+  if (typeof qCompanies === 'string' && qCompanies) {
+    companyIds.value = qCompanies.split(',').filter(Boolean);
+  } else {
+    const qCompany = route.query.companyId;
+    if (typeof qCompany === 'string' && qCompany) companyIds.value = [qCompany];
+  }
 });
 
 const allRows = computed(() =>
   buildShortageAndWarnings({
     weekStart: weekStart.value,
-    companyId: companyId.value || undefined,
+    companyIds: companyIds.value.length ? companyIds.value : undefined,
   }),
 );
 
@@ -64,8 +69,8 @@ const groupedByCompany = computed(() => {
     map.set(r.companyId, list);
   });
 
-  const companyList = companyId.value
-    ? companies.value.filter(c => c.id === companyId.value)
+  const companyList = companyIds.value.length
+    ? companies.value.filter(c => companyIds.value.includes(c.id))
     : companies.value;
 
   return companyList.map(c => {
@@ -157,7 +162,18 @@ const handleExport = () => {
         style="width: 150px"
         @change="(v: string) => { if (v) weekStart = weekStartSaturday(v) }"
       />
-      <ElSelect v-model="companyId" clearable placeholder="全部主体" size="small" style="width: 160px">
+      <ElSelect
+        v-model="companyIds"
+        multiple
+        clearable
+        collapse-tags
+        collapse-tags-tooltip
+        :max-collapse-tags="2"
+        filterable
+        placeholder="主体(可多选)"
+        size="small"
+        style="width: 200px"
+      >
         <ElOption
           v-for="c in companies"
           :key="c.id"

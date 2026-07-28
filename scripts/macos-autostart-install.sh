@@ -14,7 +14,23 @@ mkdir -p "$HOME/Library/LaunchAgents"
 
 # 找 npm（LaunchAgent 拿不到你在终端里配的 PATH）
 NPM_BIN=""
-for c in /opt/homebrew/bin/npm /usr/local/bin/npm "$(command -v npm 2>/dev/null || true)"; do
+CANDIDATES=(
+  /opt/homebrew/bin/npm
+  /usr/local/bin/npm
+)
+# nvm 常见路径
+if [[ -d "$HOME/.nvm/versions/node" ]]; then
+  # shellcheck disable=SC2012
+  LATEST_NVM="$(ls -1d "$HOME/.nvm/versions/node"/v* 2>/dev/null | sort -V | tail -1 || true)"
+  if [[ -n "$LATEST_NVM" && -x "$LATEST_NVM/bin/npm" ]]; then
+    CANDIDATES+=("$LATEST_NVM/bin/npm")
+  fi
+fi
+if command -v npm &>/dev/null; then
+  CANDIDATES+=("$(command -v npm)")
+fi
+
+for c in "${CANDIDATES[@]}"; do
   if [[ -n "$c" && -x "$c" ]]; then
     NPM_BIN="$c"
     break
@@ -22,7 +38,12 @@ for c in /opt/homebrew/bin/npm /usr/local/bin/npm "$(command -v npm 2>/dev/null 
 done
 
 if [[ -z "$NPM_BIN" ]]; then
-  echo "找不到 npm。请先安装 Node.js（见 README），再重试。"
+  echo "找不到 npm（Node.js 未安装或未加入 PATH）。"
+  echo "请先在本机终端执行："
+  echo "  brew install node"
+  echo "  # 若 brew 也找不到：先装 Homebrew，见 README"
+  echo "  node -v && npm -v"
+  echo "确认有版本号后，再执行：npm run autostart:on"
   exit 1
 fi
 

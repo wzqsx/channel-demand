@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import {
   ElTable,
@@ -68,7 +68,8 @@ const handleCompanyChange = () => {
 };
 
 const handleSubmit = () => {
-  if (!form.value.name) return ElMessage.error('请填写渠道名称');
+  const name = form.value.name.trim();
+  if (!name) return ElMessage.error('请填写渠道名称');
   if (!form.value.companyId) return ElMessage.error('请选择所属主体');
   if (!companyStore.getCompanyById(form.value.companyId)) {
     return ElMessage.error('所属主体不存在，请重新选择');
@@ -82,11 +83,13 @@ const handleSubmit = () => {
     return ElMessage.error('所选仓库必须属于同一主体，不能跨主体');
   }
 
+  const payload = { ...form.value, name };
+
   if (isEdit.value) {
-    channelStore.updateChannel(editId.value, form.value);
+    channelStore.updateChannel(editId.value, payload);
     ElMessage.success('修改成功');
   } else {
-    channelStore.addChannel(form.value);
+    channelStore.addChannel(payload);
     ElMessage.success('添加成功');
   }
   dialogVisible.value = false;
@@ -172,9 +175,9 @@ const getPriorityLabel = (priority: number) => {
   if (priority <= 10) return `P${priority} 中`;
   return `P${priority} 低`;
 };
-const filteredWarehouses = (companyId: string) =>
-  companyId ? warehouseStore.getWarehousesByCompany(companyId) : [];
-</script>
+const filteredWarehouses = computed(() =>
+  form.value.companyId ? warehouseStore.getWarehousesByCompany(form.value.companyId) : [],
+);</script>
 
 <template>
   <PageShell title="渠道管理" help="按主体隔离；优先级数字越小越高，仅同主体内参与占库存竞争。主体/仓库下拉与主数据实时同步。">
@@ -213,9 +216,25 @@ const filteredWarehouses = (companyId: string) =>
       </ElTable>
     </div>
 
-    <ElDialog v-model="dialogVisible" :title="isEdit ? '编辑渠道' : '添加渠道'" width="520px">
-      <ElForm :model="form" label-width="100px" size="small">
-        <ElFormItem label="渠道名称"><ElInput v-model="form.name" /></ElFormItem>
+    <ElDialog
+      v-model="dialogVisible"
+      :title="isEdit ? '编辑渠道' : '添加渠道'"
+      width="520px"
+      append-to-body
+      align-center
+      :close-on-click-modal="false"
+      destroy-on-close
+    >
+      <ElForm :model="form" label-width="100px" size="small" @submit.prevent>
+        <ElFormItem label="渠道名称">
+          <ElInput
+            v-model="form.name"
+            clearable
+            maxlength="64"
+            show-word-limit
+            placeholder="例如：快乐猴（中文无限制）"
+          />
+        </ElFormItem>
         <ElFormItem label="所属主体">
           <ElSelect v-model="form.companyId" style="width: 100%" filterable @change="handleCompanyChange">
             <ElOption
@@ -227,11 +246,22 @@ const filteredWarehouses = (companyId: string) =>
           </ElSelect>
         </ElFormItem>
         <ElFormItem label="可用仓库">
-          <ElSelect v-model="form.warehouseIds" multiple style="width: 100%">
+          <ElSelect
+            :key="form.companyId || 'no-company'"
+            v-model="form.warehouseIds"
+            multiple
+            filterable
+            clearable
+            collapse-tags
+            collapse-tags-tooltip
+            :max-collapse-tags="3"
+            placeholder="可多选同主体仓库"
+            style="width: 100%"
+          >
             <ElOption
-              v-for="w in filteredWarehouses(form.companyId)"
+              v-for="w in filteredWarehouses"
               :key="w.id"
-              :label="w.name"
+              :label="`${w.name}（${w.code}）`"
               :value="w.id"
             />
           </ElSelect>
