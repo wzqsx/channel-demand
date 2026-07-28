@@ -4,8 +4,6 @@ import {
   ElTable,
   ElTableColumn,
   ElButton,
-  ElSelect,
-  ElOption,
   ElDatePicker,
   ElTag,
   ElDialog,
@@ -18,6 +16,7 @@ import PageShell from '../components/PageShell.vue';
 import HelpTip from '../components/HelpTip.vue';
 import StatCards from '../components/StatCards.vue';
 import type { StatItem } from '../components/StatCards.vue';
+import MultiCheckFilter from '../components/MultiCheckFilter.vue';
 import { useRequisitionStore } from '../stores/requisition';
 import { useChannelStore } from '../stores/channel';
 import { useCompanyStore } from '../stores/company';
@@ -34,6 +33,10 @@ const productStore = useProductStore();
 
 const weekStart = ref(weekStartSaturday());
 const companyIds = ref<string[]>([]);
+
+const companyFilterOptions = computed(() =>
+  companyStore.companies.map(c => ({ value: c.id, label: c.name })),
+);
 
 const detailVisible = ref(false);
 const detailRows = ref<DemandSalesCompareRow[]>([]);
@@ -317,25 +320,12 @@ const demandHint = (productCode: string) => {
         style="width: 150px"
         @change="(v: string) => { if (v) weekStart = weekStartSaturday(v) }"
       />
-      <ElSelect
+      <MultiCheckFilter
         v-model="companyIds"
-        multiple
-        clearable
-        collapse-tags
-        collapse-tags-tooltip
-        :max-collapse-tags="2"
-        filterable
+        :options="companyFilterOptions"
         placeholder="主体(可多选)"
-        size="small"
-        style="width: 200px"
-      >
-        <ElOption
-          v-for="c in companyStore.companies"
-          :key="c.id"
-          :label="c.name"
-          :value="c.id"
-        />
-      </ElSelect>
+        width="200px"
+      />
       <span class="week-label">{{ weekLabel(weekStart) }}</span>
       <ElButton size="small" @click="exportCompare">导出核对</ElButton>
       <ElButton size="small" @click="downloadSalesTemplate">销货模板</ElButton>
