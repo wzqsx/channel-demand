@@ -114,15 +114,8 @@ const handleCompanyChange = () => {
 };
 
 const handleChannelChange = () => {
-  // 不自动全选仓库：仅 1 个仓时默认勾上，多个仓留给用户逐个勾选
-  const list = form.value.channelId
-    ? getChannelAllowedWarehouses(form.value.channelId)
-    : [];
-  form.value.warehouseIds = list.length === 1 ? [list[0].id] : [];
-};
-
-const selectAllWarehouses = () => {
-  form.value.warehouseIds = filteredWarehouses.value.map(w => w.id);
+  // 只切换可选仓库列表，绝不自动勾选；由用户逐个勾
+  form.value.warehouseIds = [];
 };
 
 const clearWarehouses = () => {
@@ -543,32 +536,23 @@ const salesFileRef = ref<HTMLInputElement | null>(null);
           <ElFormItem label="仓库" required>
             <div class="wh-box">
               <div class="wh-box__bar">
-                <ElButton
-                  link
-                  type="primary"
-                  size="small"
-                  :disabled="!filteredWarehouses.length"
-                  @click="selectAllWarehouses"
-                >
-                  全选
-                </ElButton>
+                <span class="wh-box__hint">已选主体/渠道下的仓库，请逐个勾选（不会自动全选）</span>
                 <ElButton link size="small" :disabled="!form.warehouseIds.length" @click="clearWarehouses">
-                  清空
+                  清空已选
                 </ElButton>
-                <span class="wh-box__hint">逐个勾选参与验库存的仓</span>
               </div>
               <ElCheckboxGroup v-if="filteredWarehouses.length" v-model="form.warehouseIds" class="wh-box__list">
                 <ElCheckbox
                   v-for="w in filteredWarehouses"
                   :key="w.id"
-                  :value="w.id"
+                  :label="w.id"
                   class="wh-box__item"
                 >
                   {{ w.name }}（{{ w.code }}）
                 </ElCheckbox>
               </ElCheckboxGroup>
               <div v-else class="wh-box__empty">
-                {{ form.channelId ? '该渠道暂无可用仓库' : '请先选择渠道' }}
+                {{ form.channelId ? '该渠道暂无可用仓库' : '请先选择主体和渠道' }}
               </div>
             </div>
           </ElFormItem>
@@ -783,13 +767,14 @@ const salesFileRef = ref<HTMLInputElement | null>(null);
 .wh-box__bar {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   margin-bottom: 6px;
 }
 .wh-box__hint {
-  margin-left: auto;
+  flex: 1;
   font-size: 11px;
   color: var(--erp-text-muted);
+  line-height: 1.4;
 }
 .wh-box__list {
   display: flex;

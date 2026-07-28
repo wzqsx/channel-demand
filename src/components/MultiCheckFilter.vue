@@ -52,7 +52,7 @@ const clearAll = () => {
         <ElCheckbox
           v-for="o in options"
           :key="o.value"
-          :value="o.value"
+          :label="o.value"
           class="mcf__item"
         >
           {{ o.label }}
