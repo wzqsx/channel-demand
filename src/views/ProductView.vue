@@ -11,6 +11,7 @@ import {
   ElInput,
   ElInputNumber,
   ElMessage,
+  ElMessageBox,
   ElTag,
   ElCheckbox,
   ElSelect,
@@ -129,7 +130,16 @@ const handleSubmit = () => {
   dialogVisible.value = false;
 };
 
-const handleDelete = (id: string) => {
+const handleDelete = async (id: string) => {
+  try {
+    await ElMessageBox.confirm('确认删除该商品？', '删除商品', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    });
+  } catch {
+    return;
+  }
   store.deleteProduct(id);
   ElMessage.success('删除成功');
 };

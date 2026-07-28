@@ -163,15 +163,7 @@ const handleSubmit = () => {
     return;
   }
 
-  if (form.value.stock < 0) {
-    ElMessage.error('库存数量不能为负数');
-    return;
-  }
-
-  if (form.value.inTransitStock < 0) {
-    ElMessage.error('在途库存不能为负数');
-    return;
-  }
+  // 允许负库存（与 Excel 导入一致）；列表会显示「负X箱零Y瓶」并标红
 
   stockStore.upsertStock(
     form.value.warehouseId,
@@ -184,7 +176,16 @@ const handleSubmit = () => {
   ElMessage.success('保存成功');
 };
 
-const handleDelete = (id: string) => {
+const handleDelete = async (id: string) => {
+  try {
+    await ElMessageBox.confirm('确认删除该库存行？', '删除库存', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    });
+  } catch {
+    return;
+  }
   stockStore.deleteStock(id);
   ElMessage.success('删除成功');
 };
@@ -219,17 +220,31 @@ const handleImport = async (event: Event) => {
     ? `全量替换前备份 · ${week}`
     : `增量导入前备份 · ${week}`;
 
-  const imported = stockStore.importStocks(importData, isReplaceMode.value, description, week);
+  const result = stockStore.importStocks(importData, isReplaceMode.value, description, week);
+  const skipParts = [
+    result.skippedWarehouse ? `仓库编码不匹配 ${result.skippedWarehouse}` : '',
+    result.skippedNoCode ? `缺编码 ${result.skippedNoCode}` : '',
+  ].filter(Boolean);
+  const negPart = result.negativeRows ? `，其中负库存 ${result.negativeRows} 行` : '';
+  const skipPart = skipParts.length ? `，跳过 ${skipParts.join('、')}` : '';
   ElMessage.success(
-    isReplaceMode.value
-      ? `全量替换完成（${imported} 行），已快照备份 · ${week}`
-      : `增量导入完成（${imported} 行）· ${week}`,
+    (isReplaceMode.value
+      ? `全量替换完成（成功 ${result.imported}/${result.total}）`
+      : `增量导入完成（成功 ${result.imported}/${result.total}）`) +
+      negPart +
+      skipPart +
+      ` · ${week}`,
   );
 };
 
 const getWarehouseName = (id: string) => {
   const warehouse = warehouseStore.getWarehouseById(id);
   return warehouse ? warehouse.name : '';
+};
+
+const getWarehouseCode = (id: string) => {
+  const warehouse = warehouseStore.getWarehouseById(id);
+  return warehouse ? warehouse.code : '';
 };
 
 const getProductName = (code: string) => {
@@ -388,9 +403,10 @@ const handleFieldDelete = (key: string) => {
     <div class="table-wrap">
 
     <ElTable :data="filteredStocks" border size="small" stripe class="erp-data-table" height="100%">
-      <ElTableColumn label="仓库编码" width="100">
+      <ElTableColumn label="仓库" min-width="140" show-overflow-tooltip>
         <template #default="scope">
           {{ getWarehouseName((scope.row as WarehouseStock).warehouseId) }}
+          <span class="wh-code">（{{ getWarehouseCode((scope.row as WarehouseStock).warehouseId) }}）</span>
         </template>
       </ElTableColumn>
       <ElTableColumn label="商品编码" width="100">
@@ -443,14 +459,14 @@ const handleFieldDelete = (key: string) => {
           {{ getCustomFieldValue(scope.row as WarehouseStock, field.key) }}
         </template>
       </ElTableColumn>
-      <ElTableColumn label="总库存" width="100">
+      <ElTableColumn label="总库存" width="120">
         <template #default="scope">
-          {{ getTotalStock((scope.row as WarehouseStock).productCode) }}
+          {{ formatProductQty(getTotalStock((scope.row as WarehouseStock).productCode), (scope.row as WarehouseStock).productCode) }}
         </template>
       </ElTableColumn>
-      <ElTableColumn label="总在途" width="100">
+      <ElTableColumn label="总在途" width="120">
         <template #default="scope">
-          {{ getTotalInTransitStock((scope.row as WarehouseStock).productCode) }}
+          {{ formatProductQty(getTotalInTransitStock((scope.row as WarehouseStock).productCode), (scope.row as WarehouseStock).productCode) }}
         </template>
       </ElTableColumn>
       <ElTableColumn label="操作" width="120" fixed="right">
@@ -485,10 +501,10 @@ const handleFieldDelete = (key: string) => {
           </ElSelect>
         </ElFormItem>
         <ElFormItem label="库存数量">
-          <ElInputNumber v-model="form.stock" :min="0" style="width: 100%" />
+          <ElInputNumber v-model="form.stock" style="width: 100%" />
         </ElFormItem>
         <ElFormItem label="在途库存">
-          <ElInputNumber v-model="form.inTransitStock" :min="0" style="width: 100%" />
+          <ElInputNumber v-model="form.inTransitStock" style="width: 100%" />
         </ElFormItem>
         <ElFormItem v-for="field in customFields" :key="field.key" :label="field.label">
           <ElInput v-if="field.type === 'text'" v-model="form.customFields[field.key]" />
@@ -561,5 +577,9 @@ const handleFieldDelete = (key: string) => {
 .stock-warning {
   color: #f56c6c;
   font-weight: 600;
+}
+.wh-code {
+  color: var(--erp-text-muted);
+  font-size: 12px;
 }
 </style>

@@ -10,6 +10,7 @@ import {
   ElFormItem,
   ElInput,
   ElMessage,
+  ElMessageBox,
 } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
 import { useCompanyStore } from '../stores/company';
@@ -69,7 +70,16 @@ const handleSubmit = () => {
   dialogVisible.value = false;
 };
 
-const handleDelete = (id: string) => {
+const handleDelete = async (id: string) => {
+  try {
+    await ElMessageBox.confirm('确认删除该主体？相关渠道/仓库仍会保留，但归属会异常，请谨慎。', '删除主体', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    });
+  } catch {
+    return;
+  }
   companyStore.deleteCompany(id);
   ElMessage.success('删除成功');
 };

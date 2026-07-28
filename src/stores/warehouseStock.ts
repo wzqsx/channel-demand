@@ -155,9 +155,22 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     }
 
     let imported = 0;
+    let skippedWarehouse = 0;
+    let skippedNoCode = 0;
+    let negativeRows = 0;
     data.forEach(item => {
+      if (!item.warehouseCode || !item.productCode) {
+        skippedNoCode += 1;
+        return;
+      }
       const warehouse = warehouseStore.warehouses.find(w => w.code === item.warehouseCode);
-      if (!warehouse) return;
+      if (!warehouse) {
+        skippedWarehouse += 1;
+        return;
+      }
+      const stock = Number(item.stock) || 0;
+      const inTransit = Number(item.inTransitStock) || 0;
+      if (stock < 0 || inTransit < 0) negativeRows += 1;
       const customFieldsData: Record<string, any> = {};
       for (const key in item) {
         if (!knownFields.includes(key)) customFieldsData[key] = item[key];
@@ -165,13 +178,13 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
       upsertStock(
         warehouse.id,
         item.productCode,
-        Number(item.stock) || 0,
-        Number(item.inTransitStock) || 0,
+        stock,
+        inTransit,
         Object.keys(customFieldsData).length > 0 ? customFieldsData : undefined,
       );
       imported += 1;
     });
-    return imported;
+    return { imported, skippedWarehouse, skippedNoCode, negativeRows, total: data.length };
   };
 
   const restoreFromSnapshot = (snapshot: StockSnapshot) => {

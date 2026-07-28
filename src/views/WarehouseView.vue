@@ -12,6 +12,7 @@ import {
   ElSelect,
   ElOption,
   ElMessage,
+  ElMessageBox,
 } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
 import MultiCheckFilter from '../components/MultiCheckFilter.vue';
@@ -96,7 +97,16 @@ const handleSubmit = () => {
   dialogVisible.value = false;
 };
 
-const handleDelete = (id: string) => {
+const handleDelete = async (id: string) => {
+  try {
+    await ElMessageBox.confirm('确认删除该仓库？', '删除仓库', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    });
+  } catch {
+    return;
+  }
   store.deleteWarehouse(id);
   ElMessage.success('删除成功');
 };
@@ -105,14 +115,14 @@ const getCompanyCode = (id: string) => companyStore.getCompanyById(id)?.code || 
 
 const handleExport = () => {
   exportRows(
-    warehouses.value.map(w => ({
+    listRows.value.map(w => ({
       仓库编码: w.code,
       仓库名称: w.name,
       公司编码: getCompanyCode(w.companyId),
     })),
     '仓库',
   );
-  ElMessage.success('已导出');
+  ElMessage.success(`已导出 ${listRows.value.length} 条`);
 };
 
 const handleTemplate = () => {

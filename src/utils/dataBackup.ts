@@ -56,6 +56,8 @@ export function importAppDataBackup(payload: unknown): { ok: true; keys: string[
     return { ok: false, message: '备份文件缺少 stores 数据' };
   }
   const keys: string[] = [];
+  // 先清空全部业务键，避免旧数据残留与备份混在一起
+  DATA_STORE_KEYS.forEach(key => localStorage.removeItem(key));
   DATA_STORE_KEYS.forEach(key => {
     if (key in data.stores!) {
       localStorage.setItem(key, JSON.stringify(data.stores![key]));

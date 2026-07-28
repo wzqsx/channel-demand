@@ -7,6 +7,7 @@ import {
   ElButton,
   ElDialog,
   ElMessage,
+  ElMessageBox,
 } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
 import { useStockSnapshotStore } from '../stores/stockSnapshot';
@@ -65,12 +66,30 @@ const viewSnapshot = (snapshot: StockSnapshot) => {
   showDetailDialog.value = true;
 };
 
-const deleteSnapshot = (id: string) => {
+const deleteSnapshot = async (id: string) => {
+  try {
+    await ElMessageBox.confirm('确认删除该快照？删除后不可恢复。', '删除快照', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    });
+  } catch {
+    return;
+  }
   snapshotStore.deleteSnapshot(id);
   ElMessage.success('删除成功');
 };
 
-const restoreSnapshot = (snapshot: StockSnapshot) => {
+const restoreSnapshot = async (snapshot: StockSnapshot) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认用该快照覆盖当前库存？\n\n备份时间：${formatTime(snapshot.snapshotTime)}\n记录数：${snapshot.stocks.length}\n\n当前库存会被替换，建议先到「库存导入」或右上角导出备份。`,
+      '恢复库存快照',
+      { type: 'warning', confirmButtonText: '确认恢复', cancelButtonText: '取消' },
+    );
+  } catch {
+    return;
+  }
   stockStore.restoreFromSnapshot(snapshot);
   ElMessage.success(`已恢复到 ${formatTime(snapshot.snapshotTime)} 的库存数据`);
   showDetailDialog.value = false;
@@ -126,7 +145,7 @@ const handleExportDetail = () => {
         stripe
         class="erp-data-table"
         height="100%"
-        v-loading="!snapshots.length"
+        v-loading="false"
       >
         <ElTableColumn label="序号" type="index" width="60" />
         <ElTableColumn label="备份时间" width="180">

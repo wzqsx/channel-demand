@@ -61,7 +61,7 @@ const handleImportFile = async (event: Event) => {
   if (!file) return;
   try {
     await ElMessageBox.confirm(
-      '导入会覆盖本浏览器地址下的现有数据，建议先点「导出备份」。是否继续？',
+      '导入会清空并整体替换本浏览器地址下的业务数据（与备份文件不一致的旧数据也会被清掉）。建议先点「导出备份」。是否继续？',
       '恢复数据',
       { type: 'warning', confirmButtonText: '确认导入', cancelButtonText: '取消' },
     );

@@ -180,7 +180,12 @@ const downloadDemandTemplate = () => {
 };
 
 const exportList = () => {
-  const rows = requisitionStore.exportDemandFlat(filterWeek.value || undefined).map(r => ({
+  let rows = requisitionStore.exportDemandFlat(filterWeek.value || undefined);
+  if (filterCompanyIds.value.length) {
+    const set = new Set(filterCompanyIds.value);
+    rows = rows.filter(r => set.has(r['主体ID']));
+  }
+  const mapped = rows.map(r => ({
     单号: r['单号'],
     周起始: r['周起始'],
     主体: getCompanyName(r['主体ID']),
@@ -191,12 +196,12 @@ const exportList = () => {
     要货数量: r['要货数量'],
     备注: r['备注'],
   }));
-  if (!rows.length) {
-    ElMessage.warning('当前周无要货数据可导出');
+  if (!mapped.length) {
+    ElMessage.warning('当前筛选下无要货数据可导出');
     return;
   }
-  exportRows(rows, `要货明细_${filterWeek.value || '全部'}`);
-  ElMessage.success('已导出');
+  exportRows(mapped, `要货明细_${filterWeek.value || '全部'}`);
+  ElMessage.success(`已导出 ${mapped.length} 行`);
 };
 
 const checkStock = () => {

@@ -11,7 +11,7 @@ import {
   ElInput,
   ElInputNumber,
   ElMessage,
-  ElTag,
+  ElMessageBox,
 } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
 import HelpTip from '../components/HelpTip.vue';
@@ -66,7 +66,8 @@ const openDialog = (channel?: Channel) => {
 
 /** 左侧点选主体：切换分类，右侧只显示该主体仓库；换主体时清空已选仓库防混选 */
 const selectCompany = (id: string) => {
-  if (!id || form.value.companyId === id) return;
+  if (!id) return;
+  if (form.value.companyId === id) return;
   form.value.companyId = id;
   form.value.warehouseIds = [];
 };
@@ -124,7 +125,16 @@ const handleSubmit = () => {
   dialogVisible.value = false;
 };
 
-const handleDelete = (id: string) => {
+const handleDelete = async (id: string) => {
+  try {
+    await ElMessageBox.confirm('确认删除该渠道？', '删除渠道', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    });
+  } catch {
+    return;
+  }
   channelStore.deleteChannel(id);
   ElMessage.success('删除成功');
 };
@@ -139,7 +149,7 @@ const getWarehouseCodes = (ids: string[]) =>
 
 const handleExport = () => {
   exportRows(
-    channels.value.map(ch => ({
+    listRows.value.map(ch => ({
       渠道名称: ch.name,
       主体编码: getCompanyCode(ch.companyId),
       '仓库编码(逗号分隔)': getWarehouseCodes(ch.warehouseIds),
@@ -147,7 +157,7 @@ const handleExport = () => {
     })),
     '渠道',
   );
-  ElMessage.success('已导出');
+  ElMessage.success(`已导出 ${listRows.value.length} 条`);
 };
 
 const handleTemplate = () => {
@@ -207,6 +217,10 @@ const getPriorityLabel = (priority: number) => {
 const filteredWarehouses = computed(() =>
   form.value.companyId ? warehouseStore.getWarehousesByCompany(form.value.companyId) : [],
 );
+
+const selectAllWarehouses = () => {
+  form.value.warehouseIds = filteredWarehouses.value.map(w => w.id);
+};
 
 const companyFilterOptions = computed(() =>
   companies.value.map(c => ({ value: c.id, label: `${c.name}（${c.code}）` })),
@@ -317,6 +331,15 @@ const listRows = computed(() => {
                 <span class="scope-pane__meta">
                   {{ form.warehouseIds.length }}/{{ filteredWarehouses.length }}
                 </span>
+                <ElButton
+                  link
+                  type="primary"
+                  size="small"
+                  :disabled="!filteredWarehouses.length"
+                  @click="selectAllWarehouses"
+                >
+                  全选
+                </ElButton>
                 <ElButton link size="small" :disabled="!form.warehouseIds.length" @click="clearWarehouses">
                   清空
                 </ElButton>
