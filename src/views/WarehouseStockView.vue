@@ -28,6 +28,7 @@ import { bootstrapStores } from '../stores/bootstrap';
 import type { WarehouseStock, CustomFieldConfig, FieldType, ImportWarehouseStockData } from '../types';
 import { weekStartSaturday, weekLabel } from '../utils/week';
 import { readExcelFromEvent, exportRows, downloadTemplate, cell, cellNum } from '../utils/excel';
+import { formatProductQty } from '../utils/qtyDisplay';
 
 const stockStore = useWarehouseStockStore();
 const warehouseStore = useWarehouseStore();
@@ -241,15 +242,13 @@ const getProductSpec = (code: string) => {
   return product ? product.spec : '';
 };
 
-const getProductUnit = (code: string) => {
-  const product = productStore.getProductByCode(code);
-  return product ? product.bottleUnit : '';
-};
-
 const getStockStatus = (productCode: string, stock: number, inTransitStock: number) => {
   const product = productStore.getProductByCode(productCode);
   if (!product) return { type: 'info' as const, text: '未知' };
   const availableStock = stock + inTransitStock;
+  if (availableStock < 0 || stock < 0) {
+    return { type: 'danger' as const, text: '负库存' };
+  }
   if (availableStock <= product.warningThreshold) {
     return { type: 'danger' as const, text: '库存预警' };
   }
@@ -409,21 +408,21 @@ const handleFieldDelete = (key: string) => {
           {{ getProductSpec((scope.row as WarehouseStock).productCode) }}
         </template>
       </ElTableColumn>
-      <ElTableColumn label="当前库存" width="120">
+      <ElTableColumn label="当前库存" width="140">
         <template #default="scope">
           <span :class="{ 'stock-warning': getStockStatus((scope.row as WarehouseStock).productCode, (scope.row as WarehouseStock).stock, (scope.row as WarehouseStock).inTransitStock).type === 'danger' || getStockStatus((scope.row as WarehouseStock).productCode, (scope.row as WarehouseStock).stock, (scope.row as WarehouseStock).inTransitStock).type === 'warning' }">
-            {{ (scope.row as WarehouseStock).stock }} {{ getProductUnit((scope.row as WarehouseStock).productCode) }}
+            {{ formatProductQty((scope.row as WarehouseStock).stock, (scope.row as WarehouseStock).productCode) }}
           </span>
         </template>
       </ElTableColumn>
-      <ElTableColumn label="在途库存" width="120">
+      <ElTableColumn label="在途库存" width="140">
         <template #default="scope">
-          {{ (scope.row as WarehouseStock).inTransitStock }} {{ getProductUnit((scope.row as WarehouseStock).productCode) }}
+          {{ formatProductQty((scope.row as WarehouseStock).inTransitStock, (scope.row as WarehouseStock).productCode) }}
         </template>
       </ElTableColumn>
-      <ElTableColumn label="可用库存" width="120">
+      <ElTableColumn label="可用库存" width="140">
         <template #default="scope">
-          {{ (scope.row as WarehouseStock).stock + (scope.row as WarehouseStock).inTransitStock }} {{ getProductUnit((scope.row as WarehouseStock).productCode) }}
+          {{ formatProductQty((scope.row as WarehouseStock).stock + (scope.row as WarehouseStock).inTransitStock, (scope.row as WarehouseStock).productCode) }}
         </template>
       </ElTableColumn>
       <ElTableColumn label="库存状态" width="120">

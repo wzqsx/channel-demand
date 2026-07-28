@@ -123,6 +123,9 @@ async function main() {
   ok('240瓶→10箱', formatQtyWithUnits(240, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '10箱');
   ok('243瓶→10箱零3瓶', formatQtyWithUnits(243, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '10箱零3瓶');
   ok('3瓶→3瓶', formatQtyWithUnits(3, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '3瓶');
+  ok('负243→负10箱零3瓶', formatQtyWithUnits(-243, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '负10箱零3瓶');
+  ok('负10→负10瓶', formatQtyWithUnits(-10, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '负10瓶');
+  ok('负240→负10箱', formatQtyWithUnits(-240, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '负10箱');
 
   console.log('\n[8] 箱规库存折算进瓶规');
   const { getBottleEquivalentStock } = await import('../src/utils/packStock.ts');
