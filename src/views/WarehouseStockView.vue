@@ -19,6 +19,7 @@ import {
 } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
 import HelpTip from '../components/HelpTip.vue';
+import MultiCheckFilter from '../components/MultiCheckFilter.vue';
 import { useWarehouseStockStore } from '../stores/warehouseStock';
 import { useWarehouseStore } from '../stores/warehouse';
 import { useProductStore } from '../stores/product';
@@ -113,6 +114,13 @@ const onCompanyFilterChange = () => {
   const allowed = new Set(filteredWarehouses.value.map(w => w.id));
   searchWarehouseIds.value = searchWarehouseIds.value.filter(id => allowed.has(id));
 };
+
+const companyFilterOptions = computed(() =>
+  companyStore.companies.map(c => ({ value: c.id, label: c.name })),
+);
+const warehouseFilterOptions = computed(() =>
+  filteredWarehouses.value.map(w => ({ value: w.id, label: w.name })),
+);
 
 onMounted(() => {
   bootstrapStores();
@@ -345,45 +353,19 @@ const handleFieldDelete = (key: string) => {
         style="width: 150px"
         @change="(v: string) => { if (v) importWeekStart = weekStartSaturday(v) }"
       />
-      <ElSelect
+      <MultiCheckFilter
         v-model="searchCompanyIds"
-        multiple
-        clearable
-        collapse-tags
-        collapse-tags-tooltip
-        :max-collapse-tags="2"
-        filterable
+        :options="companyFilterOptions"
         placeholder="主体(可多选)"
-        size="small"
-        style="width: 200px"
-        @change="onCompanyFilterChange"
-      >
-        <ElOption
-          v-for="c in companyStore.companies"
-          :key="c.id"
-          :label="c.name"
-          :value="c.id"
-        />
-      </ElSelect>
-      <ElSelect
+        width="200px"
+        @update:model-value="onCompanyFilterChange"
+      />
+      <MultiCheckFilter
         v-model="searchWarehouseIds"
-        multiple
-        clearable
-        collapse-tags
-        collapse-tags-tooltip
-        :max-collapse-tags="2"
-        filterable
+        :options="warehouseFilterOptions"
         placeholder="仓库(可多选)"
-        size="small"
-        style="width: 200px"
-      >
-        <ElOption
-          v-for="warehouse in filteredWarehouses"
-          :key="warehouse.id"
-          :label="warehouse.name"
-          :value="warehouse.id"
-        />
-      </ElSelect>
+        width="200px"
+      />
       <input
         type="file"
         accept=".xlsx,.xls"

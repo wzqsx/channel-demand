@@ -14,6 +14,8 @@ import {
   ElInputNumber,
   ElMessage,
   ElTag,
+  ElCheckboxGroup,
+  ElCheckbox,
 } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
 import HelpTip from '../components/HelpTip.vue';
@@ -177,7 +179,15 @@ const getPriorityLabel = (priority: number) => {
 };
 const filteredWarehouses = computed(() =>
   form.value.companyId ? warehouseStore.getWarehousesByCompany(form.value.companyId) : [],
-);</script>
+);
+
+const selectAllWarehouses = () => {
+  form.value.warehouseIds = filteredWarehouses.value.map(w => w.id);
+};
+
+const clearWarehouses = () => {
+  form.value.warehouseIds = [];
+};</script>
 
 <template>
   <PageShell title="渠道管理" help="按主体隔离；优先级数字越小越高，仅同主体内参与占库存竞争。主体/仓库下拉与主数据实时同步。">
@@ -246,25 +256,30 @@ const filteredWarehouses = computed(() =>
           </ElSelect>
         </ElFormItem>
         <ElFormItem label="可用仓库">
-          <ElSelect
-            :key="form.companyId || 'no-company'"
-            v-model="form.warehouseIds"
-            multiple
-            filterable
-            clearable
-            collapse-tags
-            collapse-tags-tooltip
-            :max-collapse-tags="3"
-            placeholder="可多选同主体仓库"
-            style="width: 100%"
-          >
-            <ElOption
-              v-for="w in filteredWarehouses"
-              :key="w.id"
-              :label="`${w.name}（${w.code}）`"
-              :value="w.id"
-            />
-          </ElSelect>
+          <div class="wh-box">
+            <div class="wh-box__bar">
+              <ElButton link type="primary" size="small" :disabled="!filteredWarehouses.length" @click="selectAllWarehouses">
+                全选
+              </ElButton>
+              <ElButton link size="small" :disabled="!form.warehouseIds.length" @click="clearWarehouses">
+                清空
+              </ElButton>
+              <span class="wh-box__hint">逐个勾选，不会一点就全选</span>
+            </div>
+            <ElCheckboxGroup v-if="filteredWarehouses.length" v-model="form.warehouseIds" class="wh-box__list">
+              <ElCheckbox
+                v-for="w in filteredWarehouses"
+                :key="w.id"
+                :value="w.id"
+                class="wh-box__item"
+              >
+                {{ w.name }}（{{ w.code }}）
+              </ElCheckbox>
+            </ElCheckboxGroup>
+            <div v-else class="wh-box__empty">
+              {{ form.companyId ? '该主体下暂无仓库' : '请先选择所属主体' }}
+            </div>
+          </div>
         </ElFormItem>
         <ElFormItem>
           <template #label>
@@ -294,5 +309,39 @@ const filteredWarehouses = computed(() =>
 
 .hidden-file {
   display: none;
+}
+.wh-box {
+  width: 100%;
+  border: 1px solid var(--erp-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #fafbfc;
+}
+.wh-box__bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.wh-box__hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--erp-text-muted);
+}
+.wh-box__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.wh-box__item {
+  margin-right: 0;
+  height: 28px;
+}
+.wh-box__empty {
+  padding: 10px 0;
+  font-size: 12px;
+  color: var(--erp-text-muted);
 }
 </style>

@@ -14,9 +14,12 @@ import {
   ElTag,
   ElMessageBox,
   ElDatePicker,
+  ElCheckboxGroup,
+  ElCheckbox,
 } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
 import HelpTip from '../components/HelpTip.vue';
+import MultiCheckFilter from '../components/MultiCheckFilter.vue';
 import { useRequisitionStore } from '../stores/requisition';
 import { useChannelStore } from '../stores/channel';
 import { useWarehouseStore } from '../stores/warehouse';
@@ -111,12 +114,24 @@ const handleCompanyChange = () => {
 };
 
 const handleChannelChange = () => {
-  if (form.value.channelId) {
-    form.value.warehouseIds = getChannelAllowedWarehouses(form.value.channelId).map(w => w.id);
-  } else {
-    form.value.warehouseIds = [];
-  }
+  // 不自动全选仓库：仅 1 个仓时默认勾上，多个仓留给用户逐个勾选
+  const list = form.value.channelId
+    ? getChannelAllowedWarehouses(form.value.channelId)
+    : [];
+  form.value.warehouseIds = list.length === 1 ? [list[0].id] : [];
 };
+
+const selectAllWarehouses = () => {
+  form.value.warehouseIds = filteredWarehouses.value.map(w => w.id);
+};
+
+const clearWarehouses = () => {
+  form.value.warehouseIds = [];
+};
+
+const companyFilterOptions = computed(() =>
+  companyStore.companies.map(c => ({ value: c.id, label: c.name })),
+);
 
 const parseExcelRows = (jsonData: any[]): ImportRequisitionData[] => {
   const converted: ImportRequisitionData[] = [];
@@ -415,25 +430,12 @@ const salesFileRef = ref<HTMLInputElement | null>(null);
         style="width: 150px"
         @change="(v: string) => { if (v) filterWeek = weekStartSaturday(v) }"
       />
-      <ElSelect
+      <MultiCheckFilter
         v-model="filterCompanyIds"
-        multiple
-        clearable
-        collapse-tags
-        collapse-tags-tooltip
-        :max-collapse-tags="2"
-        filterable
+        :options="companyFilterOptions"
         placeholder="主体(可多选)"
-        size="small"
-        style="width: 200px"
-      >
-        <ElOption
-          v-for="c in companyStore.companies"
-          :key="c.id"
-          :label="c.name"
-          :value="c.id"
-        />
-      </ElSelect>
+        width="200px"
+      />
       <ElButton type="primary" size="small" @click="openDialog">新建要货</ElButton>
       <ElButton size="small" @click="goShortageAlert">缺货与预警</ElButton>
       <ElButton size="small" @click="exportList">导出明细</ElButton>
@@ -539,25 +541,36 @@ const salesFileRef = ref<HTMLInputElement | null>(null);
             </ElSelect>
           </ElFormItem>
           <ElFormItem label="仓库" required>
-            <ElSelect
-              :key="form.channelId || 'no-channel'"
-              v-model="form.warehouseIds"
-              multiple
-              filterable
-              clearable
-              collapse-tags
-              collapse-tags-tooltip
-              :max-collapse-tags="3"
-              placeholder="参与验库存的仓库(可多选)"
-              style="width: 100%"
-            >
-              <ElOption
-                v-for="w in filteredWarehouses"
-                :key="w.id"
-                :label="`${w.name}（${w.code}）`"
-                :value="w.id"
-              />
-            </ElSelect>
+            <div class="wh-box">
+              <div class="wh-box__bar">
+                <ElButton
+                  link
+                  type="primary"
+                  size="small"
+                  :disabled="!filteredWarehouses.length"
+                  @click="selectAllWarehouses"
+                >
+                  全选
+                </ElButton>
+                <ElButton link size="small" :disabled="!form.warehouseIds.length" @click="clearWarehouses">
+                  清空
+                </ElButton>
+                <span class="wh-box__hint">逐个勾选参与验库存的仓</span>
+              </div>
+              <ElCheckboxGroup v-if="filteredWarehouses.length" v-model="form.warehouseIds" class="wh-box__list">
+                <ElCheckbox
+                  v-for="w in filteredWarehouses"
+                  :key="w.id"
+                  :value="w.id"
+                  class="wh-box__item"
+                >
+                  {{ w.name }}（{{ w.code }}）
+                </ElCheckbox>
+              </ElCheckboxGroup>
+              <div v-else class="wh-box__empty">
+                {{ form.channelId ? '该渠道暂无可用仓库' : '请先选择渠道' }}
+              </div>
+            </div>
           </ElFormItem>
         </div>
       </ElForm>
@@ -758,5 +771,40 @@ const salesFileRef = ref<HTMLInputElement | null>(null);
 .danger {
   color: #f56c6c;
   font-weight: 600;
+}
+
+.wh-box {
+  width: 100%;
+  border: 1px solid var(--erp-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #fafbfc;
+}
+.wh-box__bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.wh-box__hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--erp-text-muted);
+}
+.wh-box__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.wh-box__item {
+  margin-right: 0;
+  height: 28px;
+}
+.wh-box__empty {
+  padding: 10px 0;
+  font-size: 12px;
+  color: var(--erp-text-muted);
 }
 </style>

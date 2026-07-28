@@ -6,8 +6,6 @@ import {
   ElTable,
   ElTableColumn,
   ElButton,
-  ElSelect,
-  ElOption,
   ElDatePicker,
   ElRadioGroup,
   ElRadioButton,
@@ -17,6 +15,7 @@ import {
 import PageShell from '../components/PageShell.vue';
 import StatCards from '../components/StatCards.vue';
 import type { StatItem } from '../components/StatCards.vue';
+import MultiCheckFilter from '../components/MultiCheckFilter.vue';
 import { useCompanyStore } from '../stores/company';
 import { useWarehouseStore } from '../stores/warehouse';
 import { bootstrapStores } from '../stores/bootstrap';
@@ -33,6 +32,10 @@ const { companies } = storeToRefs(companyStore);
 const weekStart = ref(weekStartSaturday());
 const companyIds = ref<string[]>([]);
 const tab = ref<'all' | AlertKind>('all');
+
+const companyFilterOptions = computed(() =>
+  companies.value.map(c => ({ value: c.id, label: `${c.name}（${c.code}）` })),
+);
 
 onMounted(() => {
   bootstrapStores();
@@ -162,25 +165,12 @@ const handleExport = () => {
         style="width: 150px"
         @change="(v: string) => { if (v) weekStart = weekStartSaturday(v) }"
       />
-      <ElSelect
+      <MultiCheckFilter
         v-model="companyIds"
-        multiple
-        clearable
-        collapse-tags
-        collapse-tags-tooltip
-        :max-collapse-tags="2"
-        filterable
+        :options="companyFilterOptions"
         placeholder="主体(可多选)"
-        size="small"
-        style="width: 200px"
-      >
-        <ElOption
-          v-for="c in companies"
-          :key="c.id"
-          :label="`${c.name}（${c.code}）`"
-          :value="c.id"
-        />
-      </ElSelect>
+        width="200px"
+      />
       <ElRadioGroup v-model="tab" size="small">
         <ElRadioButton value="all">全部</ElRadioButton>
         <ElRadioButton value="shortage">缺货</ElRadioButton>
