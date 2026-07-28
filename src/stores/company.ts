@@ -2,12 +2,14 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import type { Company } from '../types';
 
+function newCompanyId() {
+  return `C_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
 export const useCompanyStore = defineStore('company', () => {
   const companies = ref<Company[]>([]);
 
-  // 模拟初始数据
   const initCompanies = () => {
-    // 如果已有数据，不再初始化
     if (companies.value.length > 0) return;
     companies.value = [
       { id: 'COMP001', name: '总公司', code: 'ZC' },
@@ -17,12 +19,29 @@ export const useCompanyStore = defineStore('company', () => {
     ];
   };
 
+  /** 修复历史导入撞车的重复 id，避免主体多选「点一个全选」 */
+  const ensureUniqueIds = () => {
+    const seen = new Set<string>();
+    let fixed = 0;
+    companies.value = companies.value.map(c => {
+      const id = String(c.id || '').trim();
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        return id === c.id ? c : { ...c, id };
+      }
+      const nextId = newCompanyId();
+      seen.add(nextId);
+      fixed += 1;
+      return { ...c, id: nextId };
+    });
+    return fixed;
+  };
+
   const addCompany = (company: Omit<Company, 'id'>) => {
-    const newCompany: Company = {
+    companies.value.push({
       ...company,
-      id: Date.now().toString(),
-    };
-    companies.value.push(newCompany);
+      id: newCompanyId(),
+    });
   };
 
   const updateCompany = (id: string, company: Partial<Company>) => {
@@ -39,13 +58,10 @@ export const useCompanyStore = defineStore('company', () => {
     }
   };
 
-  const getCompanyById = (id: string) => {
-    return companies.value.find(c => c.id === id);
-  };
+  const getCompanyById = (id: string) => companies.value.find(c => c.id === id);
 
   const getCompanyByCode = (code: string) => companies.value.find(c => c.code === code);
 
-  /** 按编码新增或更新 */
   const upsertByCode = (data: { code: string; name: string }) => {
     const existing = getCompanyByCode(data.code);
     if (existing) {
@@ -59,6 +75,7 @@ export const useCompanyStore = defineStore('company', () => {
   return {
     companies,
     initCompanies,
+    ensureUniqueIds,
     addCompany,
     updateCompany,
     deleteCompany,

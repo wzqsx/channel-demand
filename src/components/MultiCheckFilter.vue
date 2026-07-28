@@ -2,7 +2,7 @@
 import { ElPopover, ElButton } from 'element-plus';
 
 /**
- * 多选筛选：原生勾选，避免 Element Plus Checkbox 在部分浏览器里点选异常
+ * 多选筛选：自定义勾选行，避免重复 id / Element Plus Checkbox 导致点一个像全选
  */
 const props = withDefaults(
   defineProps<{
@@ -26,11 +26,12 @@ const clearAll = () => {
   model.value = [];
 };
 
-const toggleOne = (value: string, checked: boolean) => {
-  const set = new Set(model.value);
-  if (checked) set.add(value);
-  else set.delete(value);
-  model.value = [...set];
+const isChecked = (value: string) => model.value.includes(value);
+
+const toggleOne = (value: string) => {
+  if (!value) return;
+  const cur = model.value;
+  model.value = cur.includes(value) ? cur.filter(x => x !== value) : [...cur, value];
 };
 </script>
 
@@ -56,18 +57,20 @@ const toggleOne = (value: string, checked: boolean) => {
         <span class="mcf__count">已选 {{ model.length }}/{{ options.length }}</span>
       </div>
       <div class="mcf__list">
-        <label
-          v-for="o in options"
-          :key="o.value"
+        <div
+          v-for="(o, idx) in options"
+          :key="`${o.value}__${idx}`"
           class="mcf__item"
+          role="checkbox"
+          :aria-checked="isChecked(o.value)"
+          tabindex="0"
+          @click="toggleOne(o.value)"
+          @keydown.enter.prevent="toggleOne(o.value)"
+          @keydown.space.prevent="toggleOne(o.value)"
         >
-          <input
-            type="checkbox"
-            :checked="model.includes(o.value)"
-            @change="toggleOne(o.value, ($event.target as HTMLInputElement).checked)"
-          />
-          <span>{{ o.label }}</span>
-        </label>
+          <span class="mcf__check" :class="{ on: isChecked(o.value) }" />
+          <span class="mcf__text">{{ o.label }}</span>
+        </div>
       </div>
       <div v-if="!options.length" class="mcf__empty">暂无可选项</div>
     </div>
@@ -117,16 +120,43 @@ const toggleOne = (value: string, checked: boolean) => {
   gap: 8px;
   min-height: 28px;
   margin: 0;
+  padding: 2px 4px;
+  border-radius: 4px;
   cursor: pointer;
   font-size: 13px;
   color: var(--erp-text);
   user-select: none;
 }
-.mcf__item input {
+.mcf__item:hover {
+  background: #eef3f9;
+}
+.mcf__check {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
-  cursor: pointer;
+  border: 1px solid #c0c6cc;
+  border-radius: 3px;
+  background: #fff;
+  box-sizing: border-box;
+  position: relative;
+}
+.mcf__check.on {
+  border-color: var(--erp-primary);
+  background: var(--erp-primary);
+}
+.mcf__check.on::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 0;
+  width: 4px;
+  height: 8px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.mcf__text {
+  line-height: 1.3;
 }
 .mcf__empty {
   padding: 12px 0;

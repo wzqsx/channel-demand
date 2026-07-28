@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import {
   ElTable,
@@ -14,6 +14,7 @@ import {
   ElMessage,
 } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
+import MultiCheckFilter from '../components/MultiCheckFilter.vue';
 import { useWarehouseStore } from '../stores/warehouse';
 import { useCompanyStore } from '../stores/company';
 import { bootstrapStores } from '../stores/bootstrap';
@@ -25,6 +26,7 @@ const companyStore = useCompanyStore();
 const { warehouses } = storeToRefs(store);
 const { companies } = storeToRefs(companyStore);
 
+const filterCompanyIds = ref<string[]>([]);
 const dialogVisible = ref(false);
 const isEdit = ref(false);
 const form = ref({
@@ -37,6 +39,16 @@ const importRef = ref<HTMLInputElement | null>(null);
 
 onMounted(() => {
   bootstrapStores();
+});
+
+const companyFilterOptions = computed(() =>
+  companies.value.map(c => ({ value: c.id, label: `${c.name}（${c.code}）` })),
+);
+
+const listRows = computed(() => {
+  if (!filterCompanyIds.value.length) return warehouses.value;
+  const set = new Set(filterCompanyIds.value);
+  return warehouses.value.filter(w => set.has(w.companyId));
 });
 
 const openDialog = (warehouse?: Warehouse) => {
@@ -140,6 +152,12 @@ const getCompanyName = (id: string) => companyStore.getCompanyById(id)?.name || 
   <PageShell title="仓库管理" help="按主体维护仓库编码与名称。主体列表与「公司主体」实时同步。">
     <template #toolbar>
       <input ref="importRef" type="file" accept=".xlsx,.xls" class="hidden-file" @change="handleImport" />
+      <MultiCheckFilter
+        v-model="filterCompanyIds"
+        :options="companyFilterOptions"
+        placeholder="主体(可多选)"
+        width="200px"
+      />
       <ElButton type="primary" size="small" @click="openDialog()">添加仓库</ElButton>
       <ElButton size="small" @click="importRef?.click()">导入</ElButton>
       <ElButton size="small" @click="handleExport">导出</ElButton>
@@ -147,7 +165,7 @@ const getCompanyName = (id: string) => companyStore.getCompanyById(id)?.name || 
     </template>
 
     <div class="table-wrap">
-      <ElTable :data="warehouses" border size="small" stripe class="erp-data-table" height="100%">
+      <ElTable :data="listRows" border size="small" stripe class="erp-data-table" height="100%">
         <ElTableColumn prop="code" label="仓库编码" width="140" />
         <ElTableColumn prop="name" label="仓库名称" min-width="200" />
         <ElTableColumn label="所属主体" width="140">

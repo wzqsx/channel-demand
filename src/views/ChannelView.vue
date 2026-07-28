@@ -17,6 +17,7 @@ import {
 } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
 import HelpTip from '../components/HelpTip.vue';
+import MultiCheckFilter from '../components/MultiCheckFilter.vue';
 import { useChannelStore } from '../stores/channel';
 import { useWarehouseStore } from '../stores/warehouse';
 import { useCompanyStore } from '../stores/company';
@@ -30,6 +31,7 @@ const companyStore = useCompanyStore();
 const { channels } = storeToRefs(channelStore);
 const { companies } = storeToRefs(companyStore);
 
+const filterCompanyIds = ref<string[]>([]);
 const dialogVisible = ref(false);
 const isEdit = ref(false);
 const form = ref({
@@ -191,19 +193,35 @@ const getPriorityLabel = (priority: number) => {
 const filteredWarehouses = computed(() =>
   form.value.companyId ? warehouseStore.getWarehousesByCompany(form.value.companyId) : [],
 );
+
+const companyFilterOptions = computed(() =>
+  companies.value.map(c => ({ value: c.id, label: `${c.name}（${c.code}）` })),
+);
+
+const listRows = computed(() => {
+  if (!filterCompanyIds.value.length) return channels.value;
+  const set = new Set(filterCompanyIds.value);
+  return channels.value.filter(ch => set.has(ch.companyId));
+});
 </script>
 
 <template>
   <PageShell title="渠道管理" help="按主体隔离；优先级数字越小越高，仅同主体内参与占库存竞争。主体/仓库下拉与主数据实时同步。">
     <template #toolbar>
       <input ref="importRef" type="file" accept=".xlsx,.xls" class="hidden-file" @change="handleImport" />
+      <MultiCheckFilter
+        v-model="filterCompanyIds"
+        :options="companyFilterOptions"
+        placeholder="主体(可多选)"
+        width="200px"
+      />
       <ElButton type="primary" size="small" @click="openDialog()">添加渠道</ElButton>
       <ElButton size="small" @click="importRef?.click()">导入</ElButton>
       <ElButton size="small" @click="handleExport">导出</ElButton>
       <ElButton size="small" @click="handleTemplate">下载模板</ElButton>
     </template>
     <div class="table-wrap">
-      <ElTable :data="channels" border size="small" stripe class="erp-data-table" height="100%">
+      <ElTable :data="listRows" border size="small" stripe class="erp-data-table" height="100%">
         <ElTableColumn prop="name" label="渠道" width="140" />
         <ElTableColumn label="主体" width="120">
           <template #default="{ row }">{{ getCompanyName((row as Channel).companyId) }}</template>

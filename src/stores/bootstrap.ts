@@ -28,7 +28,7 @@ export function bootstrapStores() {
     product.initProducts();
     stock.initStocks();
   } else {
-    // 修复重复仓库 id（否则渠道里勾一个会像全选）
+    company.ensureUniqueIds();
     warehouse.ensureUniqueIds();
     if (channel.channels.length > 0) {
       channel.initChannels();
