@@ -32,12 +32,14 @@ const { companies } = storeToRefs(companyStore);
 const filterCompanyIds = ref<string[]>([]);
 const dialogVisible = ref(false);
 const isEdit = ref(false);
+/** 右侧当前浏览的主体（点左侧切换，不清空已选仓库） */
+const focusCompanyId = ref('');
 const form = ref({
   name: '',
   warehouseIds: [] as string[],
   priority: 100,
-  /** 左侧当前点选的主体（分类）；右侧只展示该主体仓库 */
-  companyId: '',
+  /** 左侧勾选的主体（可多选） */
+  companyIds: [] as string[],
 });
 const editId = ref('');
 const importRef = ref<HTMLInputElement | null>(null);
@@ -54,34 +56,65 @@ const openDialog = (channel?: Channel) => {
       name: channel.name,
       warehouseIds: [...channel.warehouseIds],
       priority: channel.priority || 100,
-      companyId: channel.companyId || '',
+      companyIds: channel.companyId ? [channel.companyId] : [],
     };
+    focusCompanyId.value = channel.companyId || '';
   } else {
     isEdit.value = false;
     editId.value = '';
-    form.value = { name: '', warehouseIds: [], priority: 100, companyId: '' };
+    form.value = { name: '', warehouseIds: [], priority: 100, companyIds: [] };
+    focusCompanyId.value = '';
   }
   dialogVisible.value = true;
 };
 
-/** 左侧点选主体：切换分类，右侧只显示该主体仓库；换主体时清空已选仓库防混选 */
-const selectCompany = (id: string) => {
+/** 点左侧主体：切换右侧列表；已选仓库全部保留 */
+const focusCompany = (id: string) => {
   if (!id) return;
-  if (form.value.companyId === id) return;
-  form.value.companyId = id;
-  form.value.warehouseIds = [];
+  focusCompanyId.value = id;
+  if (!form.value.companyIds.includes(id)) {
+    form.value.companyIds = [...form.value.companyIds, id];
+  }
 };
+
+/** 勾/取消主体：取消时去掉该主体下已选仓库 */
+const toggleCompanyCheck = (id: string) => {
+  if (!id) return;
+  const cur = form.value.companyIds;
+  if (cur.includes(id)) {
+    form.value.companyIds = cur.filter(x => x !== id);
+    const drop = new Set(warehouseStore.getWarehousesByCompany(id).map(w => w.id));
+    form.value.warehouseIds = form.value.warehouseIds.filter(wid => !drop.has(wid));
+    if (focusCompanyId.value === id) {
+      focusCompanyId.value = form.value.companyIds[0] || '';
+    }
+  } else {
+    form.value.companyIds = [...cur, id];
+    focusCompanyId.value = id;
+  }
+};
+
+const isCompanyChecked = (id: string) => form.value.companyIds.includes(id);
 
 const warehouseCountOf = (companyId: string) =>
   warehouseStore.getWarehousesByCompany(companyId).length;
 
+/** 各主体下已勾仓库数（切换浏览时仍能看到） */
 const selectedWarehouseCountOf = (companyId: string) => {
-  if (form.value.companyId !== companyId) return 0;
-  return form.value.warehouseIds.length;
+  const set = new Set(warehouseStore.getWarehousesByCompany(companyId).map(w => w.id));
+  return form.value.warehouseIds.filter(id => set.has(id)).length;
 };
 
+/** 只清空「当前右侧主体」的已选仓库，其它主体已选保留 */
 const clearWarehouses = () => {
-  form.value.warehouseIds = [];
+  if (!focusCompanyId.value) {
+    form.value.warehouseIds = [];
+    return;
+  }
+  const drop = new Set(
+    warehouseStore.getWarehousesByCompany(focusCompanyId.value).map(w => w.id),
+  );
+  form.value.warehouseIds = form.value.warehouseIds.filter(id => !drop.has(id));
 };
 
 const toggleWarehouse = (id: string) => {
@@ -95,22 +128,27 @@ const isWarehouseChecked = (id: string) => form.value.warehouseIds.includes(id);
 const handleSubmit = () => {
   const name = form.value.name.trim();
   if (!name) return ElMessage.error('请填写渠道名称');
-  if (!form.value.companyId) return ElMessage.error('请先在左侧选择所属主体');
-  if (!companyStore.getCompanyById(form.value.companyId)) {
-    return ElMessage.error('所属主体不存在，请重新选择');
-  }
   if (!form.value.warehouseIds.length) return ElMessage.error('请至少选择一个仓库');
 
-  const companyWarehouseIds = warehouseStore
-    .getWarehousesByCompany(form.value.companyId)
-    .map(w => w.id);
-  if (form.value.warehouseIds.some(id => !companyWarehouseIds.includes(id))) {
-    return ElMessage.error('所选仓库必须属于当前主体，不能跨主体');
+  const companyOfWh = new Set<string>();
+  for (const wid of form.value.warehouseIds) {
+    const w = warehouseStore.getWarehouseById(wid);
+    if (!w) return ElMessage.error('存在无效仓库，请重新勾选');
+    companyOfWh.add(w.companyId);
+  }
+  if (companyOfWh.size > 1) {
+    return ElMessage.error(
+      '同一渠道的仓库必须属于同一主体。请取消其它主体下的仓库（左侧可看各主体「已选」数量）',
+    );
+  }
+  const companyId = [...companyOfWh][0];
+  if (!companyStore.getCompanyById(companyId)) {
+    return ElMessage.error('所属主体不存在，请重新选择');
   }
 
   const payload = {
     name,
-    companyId: form.value.companyId,
+    companyId,
     warehouseIds: [...form.value.warehouseIds],
     priority: form.value.priority,
   };
@@ -215,11 +253,16 @@ const getPriorityLabel = (priority: number) => {
   return `P${priority} 低`;
 };
 const filteredWarehouses = computed(() =>
-  form.value.companyId ? warehouseStore.getWarehousesByCompany(form.value.companyId) : [],
+  focusCompanyId.value ? warehouseStore.getWarehousesByCompany(focusCompanyId.value) : [],
+);
+
+const currentSelectedCount = computed(() =>
+  focusCompanyId.value ? selectedWarehouseCountOf(focusCompanyId.value) : 0,
 );
 
 const selectAllWarehouses = () => {
-  form.value.warehouseIds = filteredWarehouses.value.map(w => w.id);
+  const ids = filteredWarehouses.value.map(w => w.id);
+  form.value.warehouseIds = [...new Set([...form.value.warehouseIds, ...ids])];
 };
 
 const companyFilterOptions = computed(() =>
@@ -300,22 +343,29 @@ const listRows = computed(() => {
             <div class="scope-pane scope-pane--left">
               <div class="scope-pane__head">
                 <span>主体</span>
-                <span class="scope-pane__meta">点选分类</span>
+                <span class="scope-pane__meta">可多选 · 点行切换</span>
               </div>
               <div v-if="companies.length" class="scope-pane__body">
                 <div
                   v-for="(c, idx) in companies"
                   :key="`${c.code}__${c.id}__${idx}`"
                   class="scope-node"
-                  :class="{ active: form.companyId === c.id }"
-                  @click="selectCompany(c.id)"
+                  :class="{
+                    active: focusCompanyId === c.id,
+                    on: isCompanyChecked(c.id),
+                  }"
+                  @click="focusCompany(c.id)"
                 >
-                  <span class="scope-radio" :class="{ on: form.companyId === c.id }" />
+                  <span
+                    class="wh-box__check"
+                    :class="{ on: isCompanyChecked(c.id) }"
+                    @click.stop="toggleCompanyCheck(c.id)"
+                  />
                   <div class="scope-node__main">
                     <div class="scope-node__title">{{ c.name }}</div>
                     <div class="scope-node__sub">
                       {{ c.code }} · {{ warehouseCountOf(c.id) }} 仓
-                      <template v-if="form.companyId === c.id && selectedWarehouseCountOf(c.id)">
+                      <template v-if="selectedWarehouseCountOf(c.id)">
                         · 已选 {{ selectedWarehouseCountOf(c.id) }}
                       </template>
                     </div>
@@ -329,7 +379,7 @@ const listRows = computed(() => {
               <div class="scope-pane__head">
                 <span>可用仓库</span>
                 <span class="scope-pane__meta">
-                  {{ form.warehouseIds.length }}/{{ filteredWarehouses.length }}
+                  {{ currentSelectedCount }}/{{ filteredWarehouses.length }}
                 </span>
                 <ElButton
                   link
@@ -340,8 +390,8 @@ const listRows = computed(() => {
                 >
                   全选
                 </ElButton>
-                <ElButton link size="small" :disabled="!form.warehouseIds.length" @click="clearWarehouses">
-                  清空
+                <ElButton link size="small" :disabled="!currentSelectedCount" @click="clearWarehouses">
+                  清空本页
                 </ElButton>
               </div>
               <div v-if="filteredWarehouses.length" class="scope-pane__body">
@@ -360,11 +410,14 @@ const listRows = computed(() => {
                 </div>
               </div>
               <div v-else class="scope-pane__empty">
-                {{ form.companyId ? '该主体下暂无仓库' : '请先在左侧点选主体' }}
+                {{ focusCompanyId ? '该主体下暂无仓库' : '请先在左侧点选/勾选主体' }}
               </div>
             </div>
           </div>
-          <div class="scope-tip">左侧点选一个主体后，右侧只显示该主体仓库；换主体会清空已选仓库，避免跨主体混选</div>
+          <div class="scope-tip">
+            左侧可多选主体；点击某行只切换右侧列表，已选仓库会保留（各主体「已选」数量仍显示）。
+            保存时同一渠道仓库须属于同一主体。
+          </div>
         </ElFormItem>
         <ElFormItem>
           <template #label>
@@ -497,30 +550,6 @@ const listRows = computed(() => {
   font-size: 11px;
   color: var(--erp-text-muted);
   line-height: 1.4;
-}
-.scope-radio {
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-  margin-top: 2px;
-  border: 1px solid #c0c6cc;
-  border-radius: 50%;
-  background: #fff;
-  box-sizing: border-box;
-  position: relative;
-}
-.scope-radio.on {
-  border-color: var(--erp-primary);
-}
-.scope-radio.on::after {
-  content: '';
-  position: absolute;
-  left: 3px;
-  top: 3px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--erp-primary);
 }
 
 .wh-box__check {
