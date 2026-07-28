@@ -100,11 +100,12 @@ const isCompanyChecked = (id: string) => form.value.companyIds.includes(id);
 const warehouseCountOf = (companyId: string) =>
   warehouseStore.getWarehousesByCompany(companyId).length;
 
-/** 各主体下已勾仓库数（切换浏览时仍能看到） */
 const selectedWarehouseCountOf = (companyId: string) => {
   const set = new Set(warehouseStore.getWarehousesByCompany(companyId).map(w => w.id));
   return form.value.warehouseIds.filter(id => set.has(id)).length;
 };
+
+const totalSelectedWarehouses = computed(() => form.value.warehouseIds.length);
 
 /** 只清空「当前右侧主体」的已选仓库，其它主体已选保留 */
 const clearWarehouses = () => {
@@ -340,7 +341,16 @@ const listRows = computed(() => {
           />
         </ElFormItem>
         <ElFormItem label="主体仓库">
-          <div class="scope-split">
+          <div class="scope-wrap">
+            <div class="scope-total">
+              已选仓库合计
+              <strong>{{ totalSelectedWarehouses }}</strong>
+              个
+              <span v-if="focusCompanyId" class="scope-total__sub">
+                （当前主体本页 {{ currentSelectedCount }}/{{ filteredWarehouses.length }}）
+              </span>
+            </div>
+            <div class="scope-split">
             <div class="scope-pane scope-pane--left">
               <div class="scope-pane__head">
                 <span>主体</span>
@@ -366,9 +376,6 @@ const listRows = computed(() => {
                     <div class="scope-node__title">{{ c.name }}</div>
                     <div class="scope-node__sub">
                       {{ c.code }} · {{ warehouseCountOf(c.id) }} 仓
-                      <template v-if="selectedWarehouseCountOf(c.id)">
-                        · 已选 {{ selectedWarehouseCountOf(c.id) }}
-                      </template>
                     </div>
                   </div>
                 </div>
@@ -416,8 +423,8 @@ const listRows = computed(() => {
             </div>
           </div>
           <div class="scope-tip">
-            左侧可多选主体；点击某行只切换右侧列表，已选仓库会保留（各主体「已选」数量仍显示）。
-            保存时同一渠道仓库须属于同一主体。
+            左侧点行切换右侧仓库列表；合计显示全部已选仓库数。保存时同一渠道仓库须属于同一主体。
+          </div>
           </div>
         </ElFormItem>
         <ElFormItem>
@@ -448,6 +455,29 @@ const listRows = computed(() => {
 
 .hidden-file {
   display: none;
+}
+
+.scope-wrap {
+  width: 100%;
+}
+.scope-total {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f0f5fb;
+  border: 1px solid #d6e4f5;
+  font-size: 13px;
+  color: var(--erp-text);
+}
+.scope-total strong {
+  margin: 0 4px;
+  font-size: 16px;
+  color: var(--erp-primary);
+}
+.scope-total__sub {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--erp-text-muted);
 }
 
 .scope-split {
