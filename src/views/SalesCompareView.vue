@@ -33,7 +33,7 @@ const companyStore = useCompanyStore();
 const productStore = useProductStore();
 
 const weekStart = ref(weekStartSaturday());
-const companyId = ref('');
+const companyIds = ref<string[]>([]);
 
 const detailVisible = ref(false);
 const detailRows = ref<DemandSalesCompareRow[]>([]);
@@ -62,7 +62,9 @@ type SummaryRow = {
 
 const summary = computed((): SummaryRow[] => {
   let list = requisitionStore.weekOverclaimSummary(weekStart.value);
-  if (companyId.value) list = list.filter(r => r.companyId === companyId.value);
+  if (companyIds.value.length) {
+    list = list.filter(r => companyIds.value.includes(r.companyId));
+  }
   return list;
 });
 
@@ -70,7 +72,7 @@ const approvedCount = computed(
   () =>
     requisitionStore
       .getRequisitionsByWeek(weekStart.value)
-      .filter(r => r.status === 'approved' && (!companyId.value || r.companyId === companyId.value))
+      .filter(r => r.status === 'approved' && (!companyIds.value.length || companyIds.value.includes(r.companyId)))
       .length,
 );
 
@@ -315,7 +317,18 @@ const demandHint = (productCode: string) => {
         style="width: 150px"
         @change="(v: string) => { if (v) weekStart = weekStartSaturday(v) }"
       />
-      <ElSelect v-model="companyId" clearable placeholder="全部主体" size="small" style="width: 140px">
+      <ElSelect
+        v-model="companyIds"
+        multiple
+        clearable
+        collapse-tags
+        collapse-tags-tooltip
+        :max-collapse-tags="2"
+        filterable
+        placeholder="主体(可多选)"
+        size="small"
+        style="width: 200px"
+      >
         <ElOption
           v-for="c in companyStore.companies"
           :key="c.id"
