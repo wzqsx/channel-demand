@@ -181,10 +181,6 @@ const filteredWarehouses = computed(() =>
   form.value.companyId ? warehouseStore.getWarehousesByCompany(form.value.companyId) : [],
 );
 
-const selectAllWarehouses = () => {
-  form.value.warehouseIds = filteredWarehouses.value.map(w => w.id);
-};
-
 const clearWarehouses = () => {
   form.value.warehouseIds = [];
 };</script>
@@ -258,19 +254,16 @@ const clearWarehouses = () => {
         <ElFormItem label="可用仓库">
           <div class="wh-box">
             <div class="wh-box__bar">
-              <ElButton link type="primary" size="small" :disabled="!filteredWarehouses.length" @click="selectAllWarehouses">
-                全选
-              </ElButton>
+              <span class="wh-box__hint">仅显示当前主体仓库，请逐个勾选（不会自动全选）</span>
               <ElButton link size="small" :disabled="!form.warehouseIds.length" @click="clearWarehouses">
-                清空
+                清空已选
               </ElButton>
-              <span class="wh-box__hint">逐个勾选，不会一点就全选</span>
             </div>
             <ElCheckboxGroup v-if="filteredWarehouses.length" v-model="form.warehouseIds" class="wh-box__list">
               <ElCheckbox
                 v-for="w in filteredWarehouses"
                 :key="w.id"
-                :value="w.id"
+                :label="w.id"
                 class="wh-box__item"
               >
                 {{ w.name }}（{{ w.code }}）
@@ -320,13 +313,14 @@ const clearWarehouses = () => {
 .wh-box__bar {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   margin-bottom: 6px;
 }
 .wh-box__hint {
-  margin-left: auto;
+  flex: 1;
   font-size: 11px;
   color: var(--erp-text-muted);
+  line-height: 1.4;
 }
 .wh-box__list {
   display: flex;
