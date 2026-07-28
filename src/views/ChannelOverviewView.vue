@@ -14,6 +14,7 @@ import {
 import PageShell from '../components/PageShell.vue';
 import StatCards from '../components/StatCards.vue';
 import type { StatItem } from '../components/StatCards.vue';
+import MultiCheckFilter from '../components/MultiCheckFilter.vue';
 import { useRequisitionStore } from '../stores/requisition';
 import { useChannelStore } from '../stores/channel';
 import { useCompanyStore } from '../stores/company';
@@ -30,6 +31,10 @@ const year = ref(new Date().getFullYear());
 const companyIds = ref<string[]>([]);
 const onlyWithSales = ref(true);
 const rankFilter = ref<'all' | 'excess' | 'top' | 'low'>('all');
+
+const companyFilterOptions = computed(() =>
+  companyStore.companies.map(c => ({ value: c.id, label: c.name })),
+);
 
 onMounted(() => {
   bootstrapStores();
@@ -159,25 +164,12 @@ const handleExport = () => {
       <ElSelect v-model="year" size="small" style="width: 110px">
         <ElOption v-for="y in yearOptions" :key="y" :label="`${y}年`" :value="y" />
       </ElSelect>
-      <ElSelect
+      <MultiCheckFilter
         v-model="companyIds"
-        multiple
-        clearable
-        collapse-tags
-        collapse-tags-tooltip
-        :max-collapse-tags="2"
-        filterable
+        :options="companyFilterOptions"
         placeholder="主体(可多选)"
-        size="small"
-        style="width: 200px"
-      >
-        <ElOption
-          v-for="c in companyStore.companies"
-          :key="c.id"
-          :label="c.name"
-          :value="c.id"
-        />
-      </ElSelect>
+        width="200px"
+      />
       <ElSelect v-model="rankFilter" size="small" style="width: 120px">
         <ElOption label="全部" value="all" />
         <ElOption label="超额完成" value="excess" />
