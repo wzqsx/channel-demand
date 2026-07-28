@@ -38,6 +38,8 @@ export interface ShortageAlertRow {
 export function buildShortageAndWarnings(opts: {
   weekStart: string;
   companyId?: string;
+  /** 多主体筛选；优先于 companyId */
+  companyIds?: string[];
   /** 要货状态范围，默认待审批+已通过 */
   demandStatuses?: Array<'pending' | 'approved' | 'rejected'>;
 }): ShortageAlertRow[] {
@@ -47,11 +49,17 @@ export function buildShortageAndWarnings(opts: {
   const productStore = useProductStore();
   const channelStore = useChannelStore();
 
+  const companyFilter = opts.companyIds?.length
+    ? new Set(opts.companyIds)
+    : opts.companyId
+      ? new Set([opts.companyId])
+      : null;
+
   const statuses = opts.demandStatuses || ['pending', 'approved'];
   const demands = requisitionStore.requisitions.filter(r => {
     if (r.weekStart !== opts.weekStart) return false;
     if (!statuses.includes(r.status as 'pending' | 'approved')) return false;
-    if (opts.companyId && r.companyId !== opts.companyId) return false;
+    if (companyFilter && !companyFilter.has(r.companyId)) return false;
     return true;
   });
 
@@ -151,8 +159,8 @@ export function buildShortageAndWarnings(opts: {
   });
 
   // 2) 预警：仅看瓶规；可用含箱规折算
-  const companyIds = opts.companyId
-    ? [opts.companyId]
+  const companyIds = companyFilter
+    ? [...companyFilter]
     : [...new Set(warehouseStore.warehouses.map(w => w.companyId))];
 
   companyIds.forEach(companyId => {
