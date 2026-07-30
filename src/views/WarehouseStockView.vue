@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, computed, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useRouter } from 'vue-router';
 import {
@@ -21,6 +21,7 @@ import {
   ElDropdownMenu,
   ElDropdownItem,
   ElLoading,
+  ElPagination,
 } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
 import MultiCheckFilter from '../components/MultiCheckFilter.vue';
@@ -87,7 +88,7 @@ const triggerImport = () => {
 const triggerReplaceImport = async () => {
   try {
     await ElMessageBox.confirm(
-      `确认用 Excel「全量替换」本周库存？\n\n周次：${weekLabel(importWeekStart.value)}\n\n旧数据会先自动快照备份，再清空并写入新数据。\n未出现在 Excel 中的 SKU 库存将丢失。\n\n（本系统未对接万里牛，建议每周固定全量替换一次）`,
+      `确认用 Excel「全量替换」本周库存？\n\n周次：${weekLabel(importWeekStart.value)}\n\n若行数很大（如数万），将写入 IndexedDB 并跳过整表快照；建议先顶栏「数据备份」导出。\n未出现在 Excel 中的 SKU 库存将丢失。`,
       '每周库存导入',
       {
         confirmButtonText: '确认全量替换',
@@ -233,7 +234,6 @@ const handleImport = async (event: Event) => {
   });
 
   try {
-    // 让 loading 先上屏，再读文件
     await new Promise<void>(r => requestAnimationFrame(() => r()));
     const jsonData = await readExcelFromEvent(event);
     if (!jsonData.length) {
@@ -241,8 +241,13 @@ const handleImport = async (event: Event) => {
       return;
     }
 
-    loading.setText(`正在导入 ${jsonData.length} 行…`);
-    await new Promise<void>(r => setTimeout(r, 0));
+    if (jsonData.length >= 50000) {
+      loading.setText(`大文件 ${jsonData.length.toLocaleString()} 行，解析完成，准备导入…`);
+      await new Promise<void>(r => setTimeout(r, 0));
+    } else {
+      loading.setText(`正在导入 ${jsonData.length.toLocaleString()} 行…`);
+      await new Promise<void>(r => setTimeout(r, 0));
+    }
 
     const knownLabels = new Set<string>([...STOCK_HEADERS]);
     const knownAlias = new Set<string>([
@@ -258,40 +263,48 @@ const handleImport = async (event: Event) => {
       'inTransitStock',
     ]);
 
-    const importData: ImportWarehouseStockData[] = jsonData.map(item => {
-      const warehouseName = cell(item, ...STOCK_HEADER_ALIASES.warehouseName);
-      const warehouseCode =
-        cell(item, ...STOCK_HEADER_ALIASES.warehouseCode) || warehouseName;
-      const result: ImportWarehouseStockData = {
-        warehouseCode,
-        warehouseName,
-        productCode: cell(item, '商品编码', 'productCode'),
-        productName: cell(item, '商品名称', 'productName'),
-        stock: cellNum(item, ...STOCK_HEADER_ALIASES.stock),
-        inTransitStock: cellNum(item, ...STOCK_HEADER_ALIASES.inTransit),
-      };
-
-      for (const key in item) {
-        if (!knownLabels.has(key) && !knownAlias.has(key)) {
-          result[key] = item[key];
+    const importData: ImportWarehouseStockData[] = [];
+    const MAP_CHUNK = 10000;
+    for (let offset = 0; offset < jsonData.length; offset += MAP_CHUNK) {
+      const slice = jsonData.slice(offset, offset + MAP_CHUNK);
+      for (const item of slice) {
+        const warehouseName = cell(item, ...STOCK_HEADER_ALIASES.warehouseName);
+        const warehouseCode =
+          cell(item, ...STOCK_HEADER_ALIASES.warehouseCode) || warehouseName;
+        const result: ImportWarehouseStockData = {
+          warehouseCode,
+          warehouseName,
+          productCode: cell(item, '商品编码', 'productCode'),
+          productName: cell(item, '商品名称', 'productName'),
+          stock: cellNum(item, ...STOCK_HEADER_ALIASES.stock),
+          inTransitStock: cellNum(item, ...STOCK_HEADER_ALIASES.inTransit),
+        };
+        for (const key in item) {
+          if (!knownLabels.has(key) && !knownAlias.has(key)) {
+            result[key] = item[key];
+          }
         }
+        importData.push(result);
       }
-
-      return result;
-    });
+      loading.setText(`整理数据 ${Math.min(offset + MAP_CHUNK, jsonData.length).toLocaleString()} / ${jsonData.length.toLocaleString()}`);
+      await new Promise<void>(r => setTimeout(r, 0));
+    }
 
     const week = weekStartSaturday(importWeekStart.value);
     const description = isReplaceMode.value
       ? `全量替换前备份 · ${week}`
       : `增量导入前备份 · ${week}`;
 
-    // 放到下一宏任务，避免与 Excel 解析同帧卡死主线程
-    await new Promise<void>(r => setTimeout(r, 0));
-    const result = stockStore.importStocks(
+    const result = await stockStore.importStocks(
       importData,
       isReplaceMode.value,
       description,
       week,
+      (done, total, phase) => {
+        loading.setText(
+          `${phase} ${done.toLocaleString()} / ${total.toLocaleString()}`,
+        );
+      },
     );
 
     const skipParts = [
@@ -300,14 +313,17 @@ const handleImport = async (event: Event) => {
     ].filter(Boolean);
     const negPart = result.negativeRows ? `，其中负库存 ${result.negativeRows} 行` : '';
     const skipPart = skipParts.length ? `，跳过 ${skipParts.join('、')}` : '';
+    const snapPart = result.snapshotSkipped ? '（大数据量已跳过整表快照，建议先导出备份）' : '';
     ElMessage.success(
       (isReplaceMode.value
         ? `全量替换完成（成功 ${result.imported}/${result.total}）`
         : `增量导入完成（成功 ${result.imported}/${result.total}）`) +
         negPart +
         skipPart +
+        snapPart +
         ` · ${week}`,
     );
+    page.value = 1;
   } catch (e) {
     console.error(e);
     ElMessage.error(e instanceof Error ? e.message : '导入失败，请检查 Excel 格式与体积');
@@ -598,6 +614,19 @@ const displayRows = computed(() => {
   return rows;
 });
 
+const page = ref(1);
+const pageSize = ref(100);
+const totalRows = computed(() => displayRows.value.length);
+const pagedRows = computed(() => {
+  const start = (page.value - 1) * pageSize.value;
+  return displayRows.value.slice(start, start + pageSize.value);
+});
+const rowIndexBase = computed(() => (page.value - 1) * pageSize.value);
+
+watch([searchCompanyIds, searchWarehouseIds, () => sortState.value.key, () => sortState.value.order], () => {
+  page.value = 1;
+});
+
 const buildStockExportRow = (stock: WarehouseStock) => {
   const warehouse = warehouseStore.getWarehouseById(stock.warehouseId);
   const available = availableOf(stock);
@@ -623,10 +652,28 @@ const buildStockExportRow = (stock: WarehouseStock) => {
   return row;
 };
 
-const handleExport = () => {
-  const rows = filteredStocks.value.map(buildStockExportRow);
-  exportRows(rows, '库存');
-  ElMessage.success(`已导出 ${rows.length} 条`);
+const handleExport = async () => {
+  const list = filteredStocks.value;
+  if (list.length >= 30000) {
+    try {
+      await ElMessageBox.confirm(
+        `当前列表约 ${list.length.toLocaleString()} 行，导出可能较慢并占用内存。是否继续？`,
+        '导出确认',
+        { type: 'warning', confirmButtonText: '继续导出', cancelButtonText: '取消' },
+      );
+    } catch {
+      return;
+    }
+  }
+  const loading = ElLoading.service({ lock: true, text: '正在导出…' });
+  try {
+    await new Promise<void>(r => setTimeout(r, 0));
+    const rows = list.map(buildStockExportRow);
+    exportRows(rows, '库存');
+    ElMessage.success(`已导出 ${rows.length} 条`);
+  } finally {
+    loading.close();
+  }
 };
 
 const handleTemplate = () => {
@@ -687,7 +734,7 @@ const handleFieldDelete = (key: string) => {
   <PageShell
     title="库存导入"
     help-title="库存导入说明"
-    help="1. 本页是「当前库存」快照：商品按编码匹配（瓶/箱编码分开），仓库可用名称或编码。&#10;2. 「本周全量替换」会先自动快照备份再清空写入；未出现在 Excel 的 SKU 会丢失。增量导入只覆盖匹配行。&#10;3. 本周需求按仓均分（多仓不重复全额），瓶规可用含箱规折算；停用渠道不计。主体汇总缺口以「缺货与预警」为准。"
+    help="1. 本页是「当前库存」快照：商品按编码匹配（瓶/箱编码分开），仓库可用名称或编码。大数据量（如数万行）存 IndexedDB，列表分页展示。&#10;2. 「本周全量替换」会写入前显示进度；≥2 万行自动跳过整表快照，建议先「数据备份」导出。增量导入只覆盖匹配行。&#10;3. 本周需求按仓均分（多仓不重复全额），瓶规可用含箱规折算；停用渠道不计。主体汇总缺口以「缺货与预警」为准。"
   >
     <template #toolbar>
       <div class="stock-toolbar">
@@ -747,7 +794,7 @@ const handleFieldDelete = (key: string) => {
     <div class="table-wrap">
 
     <ElTable
-      :data="displayRows"
+      :data="pagedRows"
       row-key="id"
       border
       size="small"
@@ -769,7 +816,7 @@ const handleFieldDelete = (key: string) => {
           />
         </template>
         <template #default="{ $index }">
-          <span class="row-index">{{ $index + 1 }}</span>
+          <span class="row-index">{{ rowIndexBase + $index + 1 }}</span>
         </template>
       </ElTableColumn>
       <ElTableColumn
@@ -915,6 +962,18 @@ const handleFieldDelete = (key: string) => {
         </template>
       </ElTableColumn>
     </ElTable>
+    <div class="stock-pager">
+      <span class="stock-pager__total">共 {{ totalRows.toLocaleString() }} 条</span>
+      <ElPagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        :total="totalRows"
+        :page-sizes="[50, 100, 200, 500]"
+        layout="sizes, prev, pager, next, jumper"
+        small
+        background
+      />
+    </div>
     </div>
 
     <ElDialog v-model="dialogVisible" :title="isEdit ? '编辑库存' : '添加库存'" width="560px">
@@ -1053,6 +1112,19 @@ const handleFieldDelete = (key: string) => {
   gap: 10px;
   padding: 12px 16px 0;
   overflow: hidden;
+}
+.stock-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 8px 0 12px;
+}
+.stock-pager__total {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--erp-text-muted, #909399);
 }
 
 .import-input {

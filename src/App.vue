@@ -47,8 +47,8 @@ const currentTitle = computed(() => {
   return '渠道要货';
 });
 
-const handleExportData = () => {
-  const n = downloadAppDataBackup();
+const handleExportData = async () => {
+  const n = await downloadAppDataBackup();
   ElMessage.success(n ? `已导出 ${n} 类业务数据` : '当前没有可导出的本地数据');
 };
 
@@ -76,7 +76,7 @@ const handleImportFile = async (event: Event) => {
   try {
     const text = await file.text();
     const json = JSON.parse(text);
-    const result = importAppDataBackup(json);
+    const result = await importAppDataBackup(json);
     if (!result.ok) {
       ElMessage.error(result.message);
       return;

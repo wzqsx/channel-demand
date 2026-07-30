@@ -1,9 +1,12 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import type { StockSnapshot, WarehouseStock } from '../types';
+import { loadSnapshotPersist, saveSnapshotPersist } from '../utils/stockPersist';
 
-/** 本地快照含整表库存，过多会撑爆 localStorage 导致导入卡死 */
-const MAX_SNAPSHOTS = 3;
+/** 快照含整表；IDB 下仍限制份数，避免磁盘暴涨 */
+const MAX_SNAPSHOTS = 2;
+/** 单份快照超过此行数则不落盘（仅内存提示用） */
+const MAX_SNAPSHOT_ROWS = 30000;
 
 function cloneStocks(stocks: WarehouseStock[]): WarehouseStock[] {
   try {
@@ -16,12 +19,41 @@ function cloneStocks(stocks: WarehouseStock[]): WarehouseStock[] {
 
 export const useStockSnapshotStore = defineStore('stockSnapshot', () => {
   const snapshots = ref<StockSnapshot[]>([]);
+  const hydrated = ref(false);
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const scheduleSave = () => {
+    if (!hydrated.value) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      void saveSnapshotPersist({ snapshots: snapshots.value }).catch(e =>
+        console.error('快照写入 IndexedDB 失败', e),
+      );
+    }, 400);
+  };
+
+  const hydrateFromIdb = async () => {
+    const data = await loadSnapshotPersist();
+    if (data?.snapshots) {
+      snapshots.value = data.snapshots as StockSnapshot[];
+    }
+    if (snapshots.value.length > MAX_SNAPSHOTS) {
+      snapshots.value = snapshots.value.slice(0, MAX_SNAPSHOTS);
+    }
+    hydrated.value = true;
+  };
+
+  watch(snapshots, () => scheduleSave(), { deep: false });
 
   const createSnapshot = (
     stocks: WarehouseStock[],
     description: string = '',
     weekStart?: string,
   ) => {
+    if (stocks.length > MAX_SNAPSHOT_ROWS) {
+      console.warn(`库存 ${stocks.length} 行，跳过整表快照落盘`);
+      return null;
+    }
     const snapshot: StockSnapshot = {
       id: Date.now().toString(),
       snapshotTime: new Date().toISOString(),
@@ -29,7 +61,6 @@ export const useStockSnapshotStore = defineStore('stockSnapshot', () => {
       weekStart,
       stocks: cloneStocks(stocks),
     };
-    // 先截断再写入，降低一次 persist 体积
     snapshots.value = [snapshot, ...snapshots.value.slice(0, MAX_SNAPSHOTS - 1)];
     return snapshot;
   };
@@ -57,7 +88,6 @@ export const useStockSnapshotStore = defineStore('stockSnapshot', () => {
     return history;
   };
 
-  /** 启动时裁剪历史过大快照，避免旧数据继续拖慢写入 */
   const compactIfNeeded = () => {
     if (snapshots.value.length > MAX_SNAPSHOTS) {
       snapshots.value = snapshots.value.slice(0, MAX_SNAPSHOTS);
@@ -66,6 +96,8 @@ export const useStockSnapshotStore = defineStore('stockSnapshot', () => {
 
   return {
     snapshots,
+    hydrated,
+    hydrateFromIdb,
     createSnapshot,
     getAllSnapshots,
     getSnapshotById,
@@ -73,4 +105,4 @@ export const useStockSnapshotStore = defineStore('stockSnapshot', () => {
     getStockHistory,
     compactIfNeeded,
   };
-}, { persist: true });
+});

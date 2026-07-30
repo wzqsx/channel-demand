@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import type {
   WarehouseStock,
   ImportWarehouseStockData,
@@ -9,16 +9,82 @@ import type {
 import { useWarehouseStore } from './warehouse';
 import { useStockSnapshotStore } from './stockSnapshot';
 import { weekStartSaturday } from '../utils/week';
+import { yieldToMain } from '../utils/idbKv';
+import { loadStockPersist, saveStockPersist } from '../utils/stockPersist';
 
 const stockKey = (warehouseId: string, productCode: string) =>
   `${warehouseId}__${productCode}`;
 
+/** 超过此行数跳过导入前整表快照（避免再拷贝一份 9 万行） */
+export const SKIP_SNAPSHOT_ROWS = 20000;
+const IMPORT_CHUNK = 8000;
+
+export type ImportStocksResult = {
+  imported: number;
+  skippedWarehouse: number;
+  skippedNoCode: number;
+  negativeRows: number;
+  total: number;
+  snapshotSkipped: boolean;
+};
+
 export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   const stocks = ref<WarehouseStock[]>([]);
   const customFields = ref<CustomFieldConfig[]>([]);
+  const hydrated = ref(false);
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let saving = false;
+  let saveQueued = false;
+
+  const scheduleSave = () => {
+    if (!hydrated.value) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      void flushSave();
+    }, 400);
+  };
+
+  const flushSave = async () => {
+    if (!hydrated.value) return;
+    if (saving) {
+      saveQueued = true;
+      return;
+    }
+    saving = true;
+    try {
+      await saveStockPersist({
+        stocks: stocks.value,
+        customFields: customFields.value,
+      });
+    } catch (e) {
+      console.error('库存写入 IndexedDB 失败', e);
+    } finally {
+      saving = false;
+      if (saveQueued) {
+        saveQueued = false;
+        scheduleSave();
+      }
+    }
+  };
+
+  /** 启动时从 IDB 恢复 */
+  const hydrateFromIdb = async () => {
+    const data = await loadStockPersist();
+    if (data) {
+      stocks.value = (data.stocks as WarehouseStock[]).map(s => ({
+        ...s,
+        stock: Number(s.stock) || 0,
+        inTransitStock: Number(s.inTransitStock) || 0,
+      }));
+      customFields.value = (data.customFields as CustomFieldConfig[]) || [];
+    }
+    hydrated.value = true;
+  };
+
+  watch(stocks, () => scheduleSave(), { deep: false });
+  watch(customFields, () => scheduleSave(), { deep: true });
 
   const initStocks = () => {
-    // 兼容旧本地数据：库存字段可能被存成字符串，导致「可用=库存+在途」变成拼接
     stocks.value = stocks.value.map(s => ({
       ...s,
       stock: Number(s.stock) || 0,
@@ -37,7 +103,6 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
       { id: '9', warehouseId: 'W005', productCode: 'P001', stock: 100, inTransitStock: 20 },
       { id: '10', warehouseId: 'W006', productCode: 'P001', stock: 80, inTransitStock: 0 },
       { id: '11', warehouseId: 'W008', productCode: 'P001', stock: 60, inTransitStock: 10 },
-      // 箱规编码库存：P0012 → P001 ×12，验瓶规要货时计入
       { id: '12', warehouseId: 'W001', productCode: 'P0012', stock: 5, inTransitStock: 0 },
     ];
   };
@@ -61,11 +126,9 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
       .filter(s => s.productCode === productCode && (!warehouseIds || warehouseIds.includes(s.warehouseId)))
       .reduce((sum, s) => sum + s.inTransitStock, 0);
 
-  /** 全仓合计（兼容旧调用） */
   const getAvailableStock = (productCode: string) =>
     getAvailableStockByWarehouses(productCode);
 
-  /** 按所选仓库汇总：库存 + 在途 */
   const getAvailableStockByWarehouses = (productCode: string, warehouseIds?: string[]) =>
     stocks.value
       .filter(s => s.productCode === productCode && (!warehouseIds?.length || warehouseIds.includes(s.warehouseId)))
@@ -82,13 +145,15 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
       s => s.warehouseId === warehouseId && s.productCode === productCode,
     );
     if (index !== -1) {
-      const cur = stocks.value[index];
-      stocks.value[index] = {
+      const next = stocks.value.slice();
+      const cur = next[index];
+      next[index] = {
         ...cur,
         stock,
         inTransitStock,
         customFields: fields !== undefined ? fields : cur.customFields,
       };
+      stocks.value = next;
     } else {
       stocks.value = [
         ...stocks.value,
@@ -129,42 +194,8 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     customFields.value = customFields.value.filter(f => f.key !== key);
   };
 
-  /**
-   * 导入库存。无万里牛对接时，建议每周「全量替换」一次。
-   * 导入前自动快照；整表批量写入，避免逐行响应式卡死。
-   */
-  const importStocks = (
-    data: ImportWarehouseStockData[],
-    replaceAll: boolean = false,
-    description: string = '',
-    weekStart?: string,
-  ) => {
+  const buildWarehouseMaps = () => {
     const warehouseStore = useWarehouseStore();
-    const snapshotStore = useStockSnapshotStore();
-    const week = weekStart || weekStartSaturday();
-
-    if (stocks.value.length > 0) {
-      try {
-        snapshotStore.createSnapshot(
-          stocks.value,
-          description || `${replaceAll ? '全量替换' : '增量导入'}前自动备份 · ${week}`,
-          week,
-        );
-      } catch (e) {
-        console.warn('导入前快照失败（可能空间不足），继续导入', e);
-      }
-    }
-
-    const knownFields = [
-      'warehouseCode',
-      'warehouseName',
-      'productCode',
-      'productName',
-      'stock',
-      'inTransitStock',
-    ];
-
-    // 仓库查找表：O(1)
     const norm = (s: string) => String(s || '').trim().toLowerCase();
     const whByCode = new Map<string, (typeof warehouseStore.warehouses)[0]>();
     const whByName = new Map<string, (typeof warehouseStore.warehouses)[0]>();
@@ -174,23 +205,68 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
       if (c && !whByCode.has(c)) whByCode.set(c, w);
       if (n && !whByName.has(n)) whByName.set(n, w);
     }
-    const resolveWh = (code?: string, name?: string) => {
-      const a = norm(code || '');
-      const b = norm(name || '');
-      if (a) return whByCode.get(a) || whByName.get(a);
-      if (b) return whByCode.get(b) || whByName.get(b);
-      return undefined;
+    return {
+      resolveWh: (code?: string, name?: string) => {
+        const a = norm(code || '');
+        const b = norm(name || '');
+        if (a) return whByCode.get(a) || whByName.get(a);
+        if (b) return whByCode.get(b) || whByName.get(b);
+        return undefined;
+      },
     };
+  };
 
-    // 增量：以现有为底；全量：空表
-    const byKey = new Map<string, WarehouseStock>();
-    if (!replaceAll) {
-      for (const s of stocks.value) {
-        byKey.set(stockKey(s.warehouseId, s.productCode), { ...s });
+  /**
+   * 大批量导入（支持进度回调、分块让出主线程）。
+   * ≥ SKIP_SNAPSHOT_ROWS 时跳过整表快照。
+   */
+  const importStocks = async (
+    data: ImportWarehouseStockData[],
+    replaceAll: boolean = false,
+    description: string = '',
+    weekStart?: string,
+    onProgress?: (done: number, total: number, phase: string) => void,
+  ): Promise<ImportStocksResult> => {
+    const snapshotStore = useStockSnapshotStore();
+    const week = weekStart || weekStartSaturday();
+    const knownFields = [
+      'warehouseCode',
+      'warehouseName',
+      'productCode',
+      'productName',
+      'stock',
+      'inTransitStock',
+    ];
+
+    const snapshotSkipped =
+      data.length >= SKIP_SNAPSHOT_ROWS || stocks.value.length >= SKIP_SNAPSHOT_ROWS;
+
+    if (!snapshotSkipped && stocks.value.length > 0) {
+      onProgress?.(0, data.length, '备份');
+      try {
+        snapshotStore.createSnapshot(
+          stocks.value,
+          description || `${replaceAll ? '全量替换' : '增量导入'}前自动备份 · ${week}`,
+          week,
+        );
+        await yieldToMain();
+      } catch (e) {
+        console.warn('导入前快照失败，继续导入', e);
       }
     }
 
-    let nextCustom = [...customFields.value];
+    const { resolveWh } = buildWarehouseMaps();
+    const byKey = new Map<string, WarehouseStock>();
+    if (!replaceAll) {
+      onProgress?.(0, data.length, '准备');
+      for (let i = 0; i < stocks.value.length; i++) {
+        const s = stocks.value[i];
+        byKey.set(stockKey(s.warehouseId, s.productCode), s);
+        if (i > 0 && i % 20000 === 0) await yieldToMain();
+      }
+    }
+
+    let nextCustom = customFields.value.slice();
     if (data.length > 0) {
       const firstItem = data[0];
       for (const key in firstItem) {
@@ -210,57 +286,79 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     let negativeRows = 0;
     let idSeq = Date.now();
 
-    for (const item of data) {
-      const whKey = String(item.warehouseCode || item.warehouseName || '').trim();
-      const productCode = String(item.productCode || '').trim();
-      if (!whKey || !productCode) {
-        skippedNoCode += 1;
-        continue;
-      }
-      const warehouse = resolveWh(item.warehouseCode, item.warehouseName);
-      if (!warehouse) {
-        skippedWarehouse += 1;
-        continue;
-      }
-      const stock = Number(item.stock) || 0;
-      const inTransit = Number(item.inTransitStock) || 0;
-      if (stock < 0 || inTransit < 0) negativeRows += 1;
+    for (let offset = 0; offset < data.length; offset += IMPORT_CHUNK) {
+      const end = Math.min(offset + IMPORT_CHUNK, data.length);
+      for (let i = offset; i < end; i++) {
+        const item = data[i];
+        const whKey = String(item.warehouseCode || item.warehouseName || '').trim();
+        const productCode = String(item.productCode || '').trim();
+        if (!whKey || !productCode) {
+          skippedNoCode += 1;
+          continue;
+        }
+        const warehouse = resolveWh(item.warehouseCode, item.warehouseName);
+        if (!warehouse) {
+          skippedWarehouse += 1;
+          continue;
+        }
+        const stock = Number(item.stock) || 0;
+        const inTransit = Number(item.inTransitStock) || 0;
+        if (stock < 0 || inTransit < 0) negativeRows += 1;
 
-      const customFieldsData: Record<string, any> = {};
-      for (const key in item) {
-        if (!knownFields.includes(key)) customFieldsData[key] = item[key];
+        let customFieldsData: Record<string, any> | undefined;
+        for (const key in item) {
+          if (!knownFields.includes(key)) {
+            if (!customFieldsData) customFieldsData = {};
+            customFieldsData[key] = item[key];
+          }
+        }
+        const key = stockKey(warehouse.id, productCode);
+        const prev = byKey.get(key);
+        if (prev) {
+          if (
+            prev.stock !== stock ||
+            prev.inTransitStock !== inTransit ||
+            customFieldsData
+          ) {
+            byKey.set(key, {
+              ...prev,
+              stock,
+              inTransitStock: inTransit,
+              customFields: customFieldsData || prev.customFields,
+            });
+          }
+        } else {
+          idSeq += 1;
+          byKey.set(key, {
+            id: `${idSeq}_${imported}`,
+            warehouseId: warehouse.id,
+            productCode,
+            stock,
+            inTransitStock: inTransit,
+            customFields: customFieldsData,
+          });
+        }
+        imported += 1;
       }
-      const hasCustom = Object.keys(customFieldsData).length > 0;
-      const key = stockKey(warehouse.id, productCode);
-      const prev = byKey.get(key);
-      if (prev) {
-        byKey.set(key, {
-          ...prev,
-          stock,
-          inTransitStock: inTransit,
-          customFields: hasCustom ? customFieldsData : prev.customFields,
-        });
-      } else {
-        idSeq += 1;
-        byKey.set(key, {
-          id: `${idSeq}_${imported}`,
-          warehouseId: warehouse.id,
-          productCode,
-          stock,
-          inTransitStock: inTransit,
-          customFields: hasCustom ? customFieldsData : undefined,
-        });
-      }
-      imported += 1;
+      onProgress?.(end, data.length, '写入');
+      await yieldToMain();
     }
 
-    // 一次写入：只触发一次响应式 + 一次 persist
+    onProgress?.(data.length, data.length, '提交');
     stocks.value = Array.from(byKey.values());
     if (nextCustom.length !== customFields.value.length) {
       customFields.value = nextCustom;
     }
+    await flushSave();
 
-    return { imported, skippedWarehouse, skippedNoCode, negativeRows, total: data.length };
+    return {
+      imported,
+      skippedWarehouse,
+      skippedNoCode,
+      negativeRows,
+      total: data.length,
+      snapshotSkipped,
+    };
   };
 
   const restoreFromSnapshot = (snapshot: StockSnapshot) => {
@@ -270,6 +368,9 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   return {
     stocks,
     customFields,
+    hydrated,
+    hydrateFromIdb,
+    flushSave,
     initStocks,
     getStocksByWarehouse,
     getStocksByProduct,
@@ -287,4 +388,4 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     importStocks,
     restoreFromSnapshot,
   };
-}, { persist: true });
+});

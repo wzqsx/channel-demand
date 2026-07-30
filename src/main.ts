@@ -8,15 +8,22 @@ import 'element-plus/dist/index.css';
 import piniaPluginPersistedstate from 'pinia-plugin-persistedstate';
 import { bootstrapStores } from './stores/bootstrap';
 
-const app = createApp(App);
-const pinia = createPinia();
-pinia.use(piniaPluginPersistedstate);
+async function start() {
+  const app = createApp(App);
+  const pinia = createPinia();
+  pinia.use(piniaPluginPersistedstate);
 
-app.use(pinia);
-app.use(router);
-app.use(ElementPlus);
+  app.use(pinia);
+  app.use(router);
+  app.use(ElementPlus);
 
-// Pinia 就绪后统一初始化，保证各页读到同一份主数据
-bootstrapStores();
+  try {
+    await bootstrapStores();
+  } catch (e) {
+    console.error('启动初始化失败', e);
+  }
 
-app.mount('#app');
+  app.mount('#app');
+}
+
+void start();
