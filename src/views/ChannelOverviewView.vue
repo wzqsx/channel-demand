@@ -22,6 +22,7 @@ import { bootstrapStores } from '../stores/bootstrap';
 import { exportRows } from '../utils/excel';
 import { periodLabel, type PeriodGrain } from '../utils/week';
 import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyFilter';
+import { formatCompanyLabel, formatCompanyNameOnly } from '../utils/companyDisplay';
 
 const requisitionStore = useRequisitionStore();
 const channelStore = useChannelStore();
@@ -34,7 +35,7 @@ const onlyWithSales = ref(true);
 const rankFilter = ref<'all' | 'excess' | 'top' | 'low'>('all');
 
 const companyFilterOptions = computed(() =>
-  companyStore.companies.map(c => ({ value: c.id, label: c.name })),
+  companyStore.companies.map(c => ({ value: c.id, label: formatCompanyLabel(c) })),
 );
 
 onMounted(() => {
@@ -89,7 +90,10 @@ const topChannel = computed(() => rankedRows.value[0] || null);
 const excessCount = computed(() => rankedRows.value.filter(r => r.isExcess).length);
 
 const getChannelName = (id: string) => channelStore.getChannelById(id)?.name || id;
-const getCompanyName = (id: string) => companyStore.getCompanyById(id)?.name || id;
+const getCompanyName = (id: string) => {
+  const c = companyStore.getCompanyById(id);
+  return c ? formatCompanyNameOnly(c) : id;
+};
 
 const statItems = computed((): StatItem[] => {
   const items: StatItem[] = [

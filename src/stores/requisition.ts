@@ -7,8 +7,9 @@ import type {
   DemandSalesCompareRow,
 } from '../types';
 import { useChannelStore } from './channel';
+import { useWarehouseStore } from './warehouse';
 import { weekStartSaturday, periodKey, completionRate, type PeriodGrain } from '../utils/week';
-import { assertRequisitionScope, filterWarehouseIdsByCompany } from '../utils/companyScope';
+import { assertRequisitionScope } from '../utils/companyScope';
 
 export interface StockCheckResult {
   productCode: string;
@@ -30,7 +31,7 @@ function overlaps(a: string[], b: string[]) {
 export const useRequisitionStore = defineStore('requisition', () => {
   const requisitions = ref<Requisition[]>([]);
 
-  /** 兼容旧本地数据：补 companyId / weekStart，并剔除跨主体仓库 */
+  /** 兼容旧本地数据：补 companyId / weekStart；保留渠道绑定内的跨主体仓 */
   const migrateLegacy = () => {
     const channelStore = useChannelStore();
     let changed = false;
@@ -44,10 +45,12 @@ export const useRequisitionStore = defineStore('requisition', () => {
         anyRow.weekStart = weekStartSaturday(r.createdAt);
         changed = true;
       }
-      if (anyRow.companyId && anyRow.warehouseIds?.length) {
-        const filtered = filterWarehouseIdsByCompany(anyRow.warehouseIds, anyRow.companyId);
-        if (filtered.length !== anyRow.warehouseIds.length) {
-          anyRow.warehouseIds = filtered;
+      // 仅清理无效仓 ID；不再按主体过滤（多主体发货合法）
+      if (anyRow.warehouseIds?.length) {
+        const whStore = useWarehouseStore();
+        const valid = anyRow.warehouseIds.filter(id => !!whStore.getWarehouseById(id));
+        if (valid.length !== anyRow.warehouseIds.length) {
+          anyRow.warehouseIds = valid;
           changed = true;
         }
       }
@@ -145,15 +148,17 @@ export const useRequisitionStore = defineStore('requisition', () => {
     productCode: string,
     channelId: string,
     warehouseIds: string[],
+    companyId?: string,
   ) => {
     const channelStore = useChannelStore();
-    const higher = channelStore.getHigherPriorityChannels(channelId);
+    const higher = channelStore.getHigherPriorityChannels(channelId, companyId);
     const higherIds = new Set(higher.map(c => c.id));
     return requisitions.value
       .filter(
         r =>
           (r.status === 'pending' || r.status === 'approved') &&
           higherIds.has(r.channelId) &&
+          (!companyId || r.companyId === companyId) &&
           overlaps(r.warehouseIds, warehouseIds),
       )
       .flatMap(r => r.items)
@@ -432,9 +437,22 @@ export const useRequisitionStore = defineStore('requisition', () => {
     return rows;
   };
 
+  /** 主体去重后，把要货单上的旧 companyId 映射到标准 id */
+  const remapCompanyIds = (idMap: Record<string, string>) => {
+    let n = 0;
+    requisitions.value = requisitions.value.map(r => {
+      const nextId = idMap[r.companyId];
+      if (!nextId || nextId === r.companyId) return r;
+      n += 1;
+      return { ...r, companyId: nextId };
+    });
+    return n;
+  };
+
   return {
     requisitions,
     migrateLegacy,
+    remapCompanyIds,
     addRequisition,
     approveRequisition,
     rejectRequisition,

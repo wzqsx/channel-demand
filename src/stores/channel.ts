@@ -9,6 +9,50 @@ const clampPriority = (n: number | undefined) => {
   return Math.min(20, Math.round(v));
 };
 
+/** 解析渠道关联的全部主体（兼容旧数据仅有 companyId） */
+export function getChannelCompanyIds(ch: Pick<Channel, 'companyId' | 'companyIds' | 'warehouseIds'>): string[] {
+  const whStore = useWarehouseStore();
+  const fromField = Array.isArray(ch.companyIds)
+    ? ch.companyIds.map(String).filter(Boolean)
+    : [];
+  const fromWh: string[] = [];
+  for (const wid of ch.warehouseIds || []) {
+    const w = whStore.getWarehouseById(wid);
+    if (w?.companyId) fromWh.push(w.companyId);
+  }
+  const legacy = ch.companyId ? [String(ch.companyId)] : [];
+  return [...new Set([...fromField, ...fromWh, ...legacy])];
+}
+
+export function channelBelongsToCompany(
+  ch: Pick<Channel, 'companyId' | 'companyIds' | 'warehouseIds'>,
+  companyId: string,
+): boolean {
+  if (!companyId) return false;
+  return getChannelCompanyIds(ch).includes(companyId);
+}
+
+/** 根据仓库列表推导 companyIds / companyId */
+export function deriveChannelCompanies(warehouseIds: string[], preferredIds: string[] = []) {
+  const whStore = useWarehouseStore();
+  const fromWh: string[] = [];
+  const validWh: string[] = [];
+  const seen = new Set<string>();
+  for (const wid of warehouseIds || []) {
+    const w = whStore.getWarehouseById(wid);
+    if (!w || seen.has(w.id)) continue;
+    seen.add(w.id);
+    validWh.push(w.id);
+    fromWh.push(w.companyId);
+  }
+  const companyIds = [...new Set([...preferredIds.filter(Boolean), ...fromWh])];
+  return {
+    warehouseIds: validWh,
+    companyIds,
+    companyId: companyIds[0] || '',
+  };
+}
+
 export const useChannelStore = defineStore('channel', () => {
   const channels = ref<Channel[]>([]);
 
@@ -26,12 +70,22 @@ export const useChannelStore = defineStore('channel', () => {
       (ch.code && String(ch.code).trim()) ||
       (ch.id && /^C\d+$/i.test(ch.id) ? ch.id.replace(/^C/i, 'CH') : '') ||
       `CH${String(index + 1).padStart(3, '0')}`;
+    const derived = deriveChannelCompanies(
+      Array.isArray(ch.warehouseIds) ? ch.warehouseIds : [],
+      getChannelCompanyIds(ch),
+    );
     return {
       ...ch,
       code,
       priority: clampPriority(ch.priority),
       enabled: ch.enabled !== false,
-      warehouseIds: Array.isArray(ch.warehouseIds) ? ch.warehouseIds : [],
+      warehouseIds: derived.warehouseIds,
+      companyIds: derived.companyIds.length
+        ? derived.companyIds
+        : ch.companyId
+          ? [ch.companyId]
+          : [],
+      companyId: derived.companyId || ch.companyId || '',
     };
   };
 
@@ -46,41 +100,62 @@ export const useChannelStore = defineStore('channel', () => {
           code = nextChannelCode();
         }
         seenCodes.add(code.toUpperCase());
-        const valid = ch.warehouseIds.filter(id => {
-          const w = whStore.getWarehouseById(id);
-          return w && w.companyId === ch.companyId;
-        });
+
+        // 修复仓库引用：允许跨主体；按 id / 编码 / 名称匹配
+        const repaired: string[] = [];
+        const seenWh = new Set<string>();
+        for (const ref of ch.warehouseIds) {
+          const key = String(ref || '').trim();
+          if (!key) continue;
+          let w = whStore.getWarehouseById(key);
+          if (!w) {
+            w = whStore.warehouses.find(x => x.code === key || x.name === key || x.id === key);
+          }
+          if (!w || seenWh.has(w.id)) continue;
+          seenWh.add(w.id);
+          repaired.push(w.id);
+        }
+        const derived = deriveChannelCompanies(repaired, getChannelCompanyIds({ ...ch, warehouseIds: repaired }));
         return {
           ...ch,
           code,
-          warehouseIds: valid.length ? valid : ch.warehouseIds,
+          warehouseIds: derived.warehouseIds,
+          companyIds: derived.companyIds,
+          companyId: derived.companyId,
         };
       });
       return;
     }
     channels.value = [
-      { id: 'C001', code: 'CH001', name: 'A渠道', warehouseIds: ['W001', 'W002', 'W003'], priority: 1, companyId: 'COMP001', enabled: true },
-      { id: 'C002', code: 'CH002', name: 'B渠道', warehouseIds: ['W001', 'W004'], priority: 2, companyId: 'COMP001', enabled: true },
-      { id: 'C003', code: 'CH003', name: 'C渠道', warehouseIds: ['W005'], priority: 1, companyId: 'COMP002', enabled: true },
-      { id: 'C004', code: 'CH004', name: 'D渠道', warehouseIds: ['W005'], priority: 10, companyId: 'COMP002', enabled: true },
-      { id: 'C005', code: 'CH005', name: 'E渠道', warehouseIds: ['W006', 'W007'], priority: 1, companyId: 'COMP003', enabled: true },
-      { id: 'C006', code: 'CH006', name: 'F渠道', warehouseIds: ['W008'], priority: 2, companyId: 'COMP004', enabled: true },
+      { id: 'C001', code: 'CH001', name: 'A渠道', warehouseIds: ['W001', 'W002', 'W003'], priority: 1, companyId: 'COMP001', companyIds: ['COMP001'], enabled: true },
+      { id: 'C002', code: 'CH002', name: 'B渠道', warehouseIds: ['W001', 'W004'], priority: 2, companyId: 'COMP001', companyIds: ['COMP001'], enabled: true },
+      { id: 'C003', code: 'CH003', name: 'C渠道', warehouseIds: ['W005'], priority: 1, companyId: 'COMP002', companyIds: ['COMP002'], enabled: true },
+      { id: 'C004', code: 'CH004', name: 'D渠道', warehouseIds: ['W005'], priority: 10, companyId: 'COMP002', companyIds: ['COMP002'], enabled: true },
+      { id: 'C005', code: 'CH005', name: 'E渠道', warehouseIds: ['W006', 'W007'], priority: 1, companyId: 'COMP003', companyIds: ['COMP003'], enabled: true },
+      { id: 'C006', code: 'CH006', name: 'F渠道', warehouseIds: ['W008'], priority: 2, companyId: 'COMP004', companyIds: ['COMP004'], enabled: true },
     ];
   };
 
   const addChannel = (channel: Omit<Channel, 'id'>) => {
-    const whStore = useWarehouseStore();
-    const warehouseIds = channel.warehouseIds.filter(id => {
-      const w = whStore.getWarehouseById(id);
-      return !!w && w.companyId === channel.companyId;
-    });
+    const derived = deriveChannelCompanies(channel.warehouseIds, [
+      ...getChannelCompanyIds(channel),
+      ...(Array.isArray(channel.companyIds) ? channel.companyIds : []),
+    ]);
+    if (!derived.warehouseIds.length) {
+      throw new Error('请至少关联一个有效仓库');
+    }
+    if (!derived.companyIds.length) {
+      throw new Error('无法确定关联主体，请重新勾选仓库');
+    }
     const code = (channel.code && String(channel.code).trim()) || nextChannelCode();
     if (channels.value.some(c => c.code.toUpperCase() === code.toUpperCase())) {
       throw new Error(`渠道编码已存在：${code}`);
     }
     channels.value.push({
       ...channel,
-      warehouseIds,
+      warehouseIds: derived.warehouseIds,
+      companyIds: derived.companyIds,
+      companyId: derived.companyId,
       code,
       id: Date.now().toString(),
       priority: clampPriority(channel.priority),
@@ -102,12 +177,14 @@ export const useChannelStore = defineStore('channel', () => {
     }
     if (channel.priority != null) next.priority = clampPriority(channel.priority);
     if (channel.enabled != null) next.enabled = !!channel.enabled;
-    const whStore = useWarehouseStore();
-    next.warehouseIds = (next.warehouseIds || []).filter(wid => {
-      const w = whStore.getWarehouseById(wid);
-      return !!w && w.companyId === next.companyId;
-    });
-    channels.value[index] = next;
+    const derived = deriveChannelCompanies(next.warehouseIds || [], [
+      ...getChannelCompanyIds(next),
+      ...(Array.isArray(channel.companyIds) ? channel.companyIds : []),
+    ]);
+    next.warehouseIds = derived.warehouseIds;
+    next.companyIds = derived.companyIds;
+    next.companyId = derived.companyId;
+    channels.value = channels.value.map((c, i) => (i === index ? next : c));
   };
 
   const deleteChannel = (id: string) => {
@@ -121,11 +198,13 @@ export const useChannelStore = defineStore('channel', () => {
     channels.value.find(c => c.code.toUpperCase() === String(code).trim().toUpperCase());
 
   const getChannelByName = (name: string, companyId?: string) =>
-    channels.value.find(c => c.name === name && (!companyId || c.companyId === companyId));
+    channels.value.find(
+      c => c.name === name && (!companyId || channelBelongsToCompany(c, companyId)),
+    );
 
   const getChannelsByCompany = (companyId: string, opts?: { includeDisabled?: boolean }) =>
     channels.value.filter(
-      c => c.companyId === companyId && (opts?.includeDisabled || c.enabled !== false),
+      c => channelBelongsToCompany(c, companyId) && (opts?.includeDisabled || c.enabled !== false),
     );
 
   const getChannelsSortedByPriority = (companyId?: string, opts?: { includeDisabled?: boolean }) => {
@@ -135,15 +214,16 @@ export const useChannelStore = defineStore('channel', () => {
     return [...list].sort((a, b) => a.priority - b.priority || a.code.localeCompare(b.code));
   };
 
-  /** 仅同主体内、已启用、优先级更高（数字更小）的渠道 */
-  const getHigherPriorityChannels = (channelId: string) => {
+  /** 在指定主体语境下、已启用、优先级更高（数字更小）的渠道 */
+  const getHigherPriorityChannels = (channelId: string, companyId?: string) => {
     const current = getChannelById(channelId);
     if (!current) return [];
+    const scopeCompany = companyId || current.companyId;
     return channels.value.filter(
       c =>
         c.id !== channelId &&
         c.enabled !== false &&
-        c.companyId === current.companyId &&
+        channelBelongsToCompany(c, scopeCompany) &&
         c.priority < current.priority,
     );
   };
@@ -164,6 +244,24 @@ export const useChannelStore = defineStore('channel', () => {
     return channels.value[channels.value.length - 1]?.id;
   };
 
+  /** 把渠道上的旧主体 id 映射到去重后的标准 id */
+  const remapCompanyIds = (idMap: Record<string, string>) => {
+    let n = 0;
+    channels.value = channels.value.map(ch => {
+      const mapOne = (id: string) => idMap[id] || id;
+      const companyIds = getChannelCompanyIds(ch).map(mapOne);
+      const unique = [...new Set(companyIds.filter(Boolean))];
+      const companyId = mapOne(ch.companyId || '') || unique[0] || '';
+      const changed =
+        companyId !== ch.companyId ||
+        JSON.stringify(unique) !== JSON.stringify(ch.companyIds || []);
+      if (!changed) return ch;
+      n += 1;
+      return { ...ch, companyId, companyIds: unique };
+    });
+    return n;
+  };
+
   return {
     channels,
     initChannels,
@@ -178,5 +276,6 @@ export const useChannelStore = defineStore('channel', () => {
     getHigherPriorityChannels,
     upsertChannel,
     nextChannelCode,
+    remapCompanyIds,
   };
 }, { persist: true });

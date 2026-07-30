@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { ElButton, ElMessage, ElMessageBox } from 'element-plus';
+import { ElButton, ElMessage, ElMessageBox, ElDropdown, ElDropdownMenu, ElDropdownItem } from 'element-plus';
 import { downloadAppDataBackup, importAppDataBackup } from './utils/dataBackup';
 
 const router = useRouter();
@@ -54,6 +54,11 @@ const handleExportData = () => {
 
 const handleImportClick = () => importInputRef.value?.click();
 
+const handleBackupCommand = (cmd: string | number) => {
+  if (cmd === 'export') handleExportData();
+  if (cmd === 'import') handleImportClick();
+};
+
 const handleImportFile = async (event: Event) => {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
@@ -61,8 +66,8 @@ const handleImportFile = async (event: Event) => {
   if (!file) return;
   try {
     await ElMessageBox.confirm(
-      '导入会清空并整体替换本浏览器地址下的业务数据（与备份文件不一致的旧数据也会被清掉）。建议先点「导出备份」。是否继续？',
-      '恢复数据',
+      '导入会清空并整体替换本浏览器地址下的业务数据（与备份文件不一致的旧数据也会被清掉）。建议先通过「数据备份 → 导出整站备份」留底。是否继续？',
+      '恢复整站数据',
       { type: 'warning', confirmButtonText: '确认导入', cancelButtonText: '取消' },
     );
   } catch {
@@ -122,8 +127,18 @@ const handleImportFile = async (event: Event) => {
             class="hidden-file"
             @change="handleImportFile"
           />
-          <ElButton size="small" @click="handleExportData">导出备份</ElButton>
-          <ElButton size="small" @click="handleImportClick">导入备份</ElButton>
+          <ElDropdown trigger="click" @command="handleBackupCommand">
+            <ElButton size="small">
+              数据备份
+              <span class="dropdown-caret">▾</span>
+            </ElButton>
+            <template #dropdown>
+              <ElDropdownMenu>
+                <ElDropdownItem command="export">导出整站备份</ElDropdownItem>
+                <ElDropdownItem command="import">导入整站备份</ElDropdownItem>
+              </ElDropdownMenu>
+            </template>
+          </ElDropdown>
         </div>
       </header>
       <main class="content">
@@ -251,6 +266,12 @@ const handleImportFile = async (event: Event) => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.dropdown-caret {
+  margin-left: 4px;
+  font-size: 10px;
+  opacity: 0.7;
 }
 
 .hidden-file {

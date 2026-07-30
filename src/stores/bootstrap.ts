@@ -30,6 +30,11 @@ export function bootstrapStores() {
   } else {
     company.ensureUniqueIds();
     warehouse.ensureUniqueIds();
+    // 统一「下级C/子公司C → 下属C」等文案，并合并同代码重复主体
+    const companyIdMap = company.normalizeCompanies();
+    warehouse.remapCompanyIds(companyIdMap);
+    channel.remapCompanyIds(companyIdMap);
+    requisition.remapCompanyIds(companyIdMap);
     product.initProducts(); // 纠正组合品每箱瓶数=换算比例
     if (channel.channels.length > 0) {
       channel.initChannels();

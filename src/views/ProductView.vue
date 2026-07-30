@@ -21,12 +21,21 @@ import type { TableInstance } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
 import HelpTip from '../components/HelpTip.vue';
 import { useProductStore } from '../stores/product';
+import { useWarehouseStockStore } from '../stores/warehouseStock';
+import { useRequisitionStore } from '../stores/requisition';
 import { bootstrapStores } from '../stores/bootstrap';
 import type { Product } from '../types';
 import { readExcelFromEvent, exportRows, downloadTemplate, cell, cellNum } from '../utils/excel';
-import { formatProductQty, formatQtyWithUnits, boxesToBottles, bottlesToBoxes } from '../utils/qtyDisplay';
+import {
+  boxesToBottles,
+  formatProductQtyFull,
+  formatWarningBoxesDisplay,
+  splitProductQty,
+} from '../utils/qtyDisplay';
 
 const store = useProductStore();
+const stockStore = useWarehouseStockStore();
+const requisitionStore = useRequisitionStore();
 const { products } = storeToRefs(store);
 const dialogVisible = ref(false);
 const isEdit = ref(false);
@@ -107,7 +116,10 @@ const openDialog = (product?: Product) => {
       boxUnit: product.boxUnit,
       bottlesPerBox: product.bottlesPerBox,
       stock: product.stock,
-      warningBoxes: bottlesToBoxes(product.warningThreshold, product.bottlesPerBox) || 0,
+      warningBoxes: (() => {
+        const per = Math.max(1, product.bottlesPerBox || 1);
+        return Math.max(0, Math.round(product.warningThreshold / per));
+      })(),
       isCombined: product.isCombined || false,
       combineProductCode: product.combineProductCode || '',
       combineRatio: product.combineRatio || 0,
@@ -184,12 +196,20 @@ const handleSubmit = () => {
     form.value.bottlesPerBox = form.value.combineRatio;
   }
 
+  const normUnit = (u: string) => {
+    const s = String(u || '').trim();
+    if (s === '瓶子') return '瓶';
+    if (s === '盒子') return '盒';
+    if (s === '箱子') return '箱';
+    return s || '瓶';
+  };
+
   const payload = {
     code: form.value.code.trim(),
     name: form.value.name.trim(),
     spec: form.value.spec,
-    bottleUnit: form.value.bottleUnit,
-    boxUnit: form.value.boxUnit,
+    bottleUnit: normUnit(form.value.bottleUnit),
+    boxUnit: normUnit(form.value.boxUnit) || '箱',
     bottlesPerBox: form.value.isCombined
       ? form.value.combineRatio
       : Math.max(1, form.value.bottlesPerBox),
@@ -212,6 +232,23 @@ const handleSubmit = () => {
 };
 
 const handleDelete = async (id: string) => {
+  const product = store.products.find(p => p.id === id);
+  const code = product?.code || '';
+  const stockN = code
+    ? stockStore.stocks.filter(s => s.productCode === code).length
+    : 0;
+  const reqN = code
+    ? requisitionStore.requisitions.filter(r => r.items.some(i => i.productCode === code)).length
+    : 0;
+  const packN = code
+    ? store.products.filter(p => p.isCombined && p.combineProductCode === code).length
+    : 0;
+  if (stockN || reqN || packN) {
+    ElMessage.warning(
+      `该商品仍被 ${stockN} 条库存、${reqN} 张要货、${packN} 个箱规引用，请先处理后再删`,
+    );
+    return;
+  }
   try {
     await ElMessageBox.confirm('确认删除该商品？', '删除商品', {
       type: 'warning',
@@ -308,7 +345,9 @@ const handleExport = () => {
       箱单位: p.boxUnit,
       每箱瓶数: p.bottlesPerBox,
       '预警阈值(瓶)': p.warningThreshold,
-      '预警阈值(箱)': bottlesToBoxes(p.warningThreshold, p.bottlesPerBox),
+      '预警阈值(箱)': Math.round(
+        p.warningThreshold / Math.max(1, p.bottlesPerBox || 1),
+      ),
       '是否组合(是/否)': p.isCombined ? '是' : '否',
       组合基础编码: p.combineProductCode,
       组合比例: p.combineRatio,
@@ -380,6 +419,9 @@ const getStockStatus = (product: Product) => {
   return { type: 'success' as const, text: '库存充足' };
 };
 
+const tableRowClassName = ({ row }: { row: Product }) =>
+  store.isWarning(row) ? 'product-row--warning' : '';
+
 const getCombineInfo = (product: Product) => {
   if (!product.isCombined || !product.combineProductCode) return '';
   const baseProduct = store.getProductByCode(product.combineProductCode);
@@ -387,16 +429,15 @@ const getCombineInfo = (product: Product) => {
   return `${product.code} = ${product.combineRatio} × ${baseName}`;
 };
 
-const warningBoxesLabel = (p: Product) => {
-  const boxes = bottlesToBoxes(p.warningThreshold, p.bottlesPerBox);
-  return `${boxes}${p.boxUnit || '箱'}`;
-};
+/** 库存：箱 + 零头（零头单位 = bottleUnit）；预警：只显示整箱 */
+const stockParts = (p: Product) => splitProductQty(p.stock, p);
+const warningDisplay = (p: Product) => formatWarningBoxesDisplay(p);
 </script>
 
 <template>
   <PageShell
     title="商品信息管理"
-    help="库存/要货一律按「商品编码」区分：瓶规编码与箱规编码分开维护。箱规勾选组合品，并填基础瓶规编码；换算比例与每箱瓶数必须一致（系统会强制同步）。预警按箱录入。"
+    help="瓶规与箱规分编码维护。箱规勾选「组合品」并指定基础瓶规与换算比例。预警按整数箱录入。库存/要货均按商品编码区分。"
   >
     <template #toolbar>
       <input ref="importRef" type="file" accept=".xlsx,.xls" class="hidden-file" @change="handleImport" />
@@ -429,74 +470,102 @@ const warningBoxesLabel = (p: Product) => {
         border
         size="small"
         stripe
-        class="erp-data-table"
+        class="erp-data-table product-table"
         height="100%"
         row-key="id"
+        table-layout="auto"
+        :row-class-name="tableRowClassName"
         :style="showWarning && store.warningCount > 0 ? { marginTop: '8px' } : undefined"
         @selection-change="onSelectionChange"
       >
         <ElTableColumn type="selection" width="42" fixed="left" />
-        <ElTableColumn type="index" label="序号" width="55" fixed="left" />
-        <ElTableColumn prop="code" label="商品编码" width="120" sortable show-overflow-tooltip />
-        <ElTableColumn prop="name" label="商品名称" min-width="140" sortable show-overflow-tooltip />
-        <ElTableColumn prop="spec" label="规格" width="100" sortable show-overflow-tooltip />
-        <ElTableColumn prop="bottleUnit" label="瓶单位" width="72" />
-        <ElTableColumn prop="boxUnit" label="箱单位" width="72" />
-        <ElTableColumn prop="bottlesPerBox" label="每箱瓶数" width="88" align="center" sortable />
-        <ElTableColumn label="当前库存" width="130" prop="stock" sortable>
+        <ElTableColumn type="index" label="序号" width="52" fixed="left" />
+        <ElTableColumn prop="code" label="商品编码" min-width="110" sortable show-overflow-tooltip />
+        <ElTableColumn prop="name" label="商品名称" min-width="120" sortable show-overflow-tooltip />
+        <ElTableColumn prop="spec" label="规格" min-width="80" sortable show-overflow-tooltip />
+        <ElTableColumn prop="bottleUnit" label="瓶单位" width="78" align="center" class-name="col-unit" />
+        <ElTableColumn prop="boxUnit" label="箱单位" width="78" align="center" class-name="col-unit" />
+        <ElTableColumn prop="bottlesPerBox" label="每箱" width="72" align="center" sortable class-name="col-unit" />
+        <ElTableColumn label="当前库存" min-width="168" sortable :sort-method="(a: Product, b: Product) => a.stock - b.stock">
           <template #default="{ row }">
-            <span :class="{ 'stock-warning': store.isWarning(row as Product) }">
-              {{ formatProductQty((row as Product).stock, (row as Product).code) }}
-            </span>
+            <template v-for="parts in [stockParts(row as Product)]" :key="(row as Product).id + '-stock'">
+              <span
+                class="qty-text"
+                :class="{ 'stock-warning': store.isWarning(row as Product) }"
+                :title="parts.full"
+              >
+                <template v-if="parts.remainder > 0 && Math.abs(parts.boxes) > 0">
+                  <span class="qty-num">{{ parts.neg ? '负' : '' }}{{ Math.abs(parts.boxes) }}</span>
+                  <span class="qty-unit-box">{{ parts.boxUnit }}</span>
+                  <span class="qty-sep">＋</span>
+                  <span class="qty-num">{{ parts.remainder }}</span>
+                  <span class="qty-unit-small">{{ parts.smallUnit }}</span>
+                </template>
+                <template v-else-if="Math.abs(parts.boxes) > 0 && parts.remainder === 0">
+                  <span class="qty-num">{{ parts.neg ? '负' : '' }}{{ Math.abs(parts.boxes) }}</span>
+                  <span class="qty-unit-box">{{ parts.boxUnit }}</span>
+                </template>
+                <template v-else>
+                  <span class="qty-num">{{ parts.neg ? '负' : '' }}{{ parts.remainder || 0 }}</span>
+                  <span class="qty-unit-small">{{ parts.smallUnit }}</span>
+                </template>
+              </span>
+            </template>
           </template>
-        </ElTableColumn>
-        <ElTableColumn label="当前库存(瓶)" width="110" align="right" prop="stock" sortable>
-          <template #default="{ row }">{{ (row as Product).stock }}</template>
         </ElTableColumn>
         <ElTableColumn
           label="预警阈值"
-          width="100"
-          prop="warningThreshold"
+          min-width="150"
           sortable
           :sort-method="(a: Product, b: Product) => a.warningThreshold - b.warningThreshold"
         >
-          <template #default="{ row }">{{ warningBoxesLabel(row as Product) }}</template>
-        </ElTableColumn>
-        <ElTableColumn label="预警阈值(瓶)" width="110" align="right" prop="warningThreshold" sortable>
           <template #default="{ row }">
-            {{ (row as Product).warningThreshold }} {{ (row as Product).bottleUnit }}
+            <template v-for="w in [warningDisplay(row as Product)]" :key="(row as Product).id + '-warn'">
+              <span class="qty-text" :title="w.full">
+                <span class="qty-num">{{ w.boxes }}</span>
+                <span class="qty-unit-box">{{ w.boxUnit }}</span>
+                <span class="qty-warn-sub">（共{{ w.bottles }}{{ w.smallUnit }}）</span>
+              </span>
+            </template>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="库存状态" width="100">
+        <ElTableColumn label="状态" width="96" align="center">
           <template #default="{ row }">
             <ElTag size="small" :type="getStockStatus(row as Product).type">
               {{ getStockStatus(row as Product).text }}
             </ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="箱规" width="70" align="center">
+        <ElTableColumn label="箱规" width="64" align="center">
           <template #default="{ row }">
             <ElTag size="small" :type="(row as Product).isCombined ? 'warning' : 'info'">
               {{ (row as Product).isCombined ? '是' : '否' }}
             </ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="箱→瓶换算" width="180" show-overflow-tooltip>
+        <ElTableColumn label="箱→瓶" min-width="140" show-overflow-tooltip>
           <template #default="{ row }">
             <span v-if="(row as Product).isCombined">{{ getCombineInfo(row as Product) }}</span>
             <span v-else class="text-muted">-</span>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="操作" width="140" fixed="right">
+        <ElTableColumn label="操作" width="132" fixed="right" align="center" class-name="col-actions">
           <template #default="{ row }">
-            <ElButton link type="primary" size="small" @click="openDialog(row as Product)">编辑</ElButton>
-            <ElButton link type="danger" size="small" @click="handleDelete((row as Product).id)">删除</ElButton>
+            <div class="row-actions">
+              <ElButton link type="primary" size="small" @click="openDialog(row as Product)">编辑</ElButton>
+              <ElButton link type="danger" size="small" @click="handleDelete((row as Product).id)">删除</ElButton>
+            </div>
           </template>
         </ElTableColumn>
       </ElTable>
     </div>
 
-    <ElDialog v-model="dialogVisible" :title="isEdit ? '编辑商品' : '添加商品'" width="600px">
+    <ElDialog
+      v-model="dialogVisible"
+      :title="isEdit ? '编辑商品' : '添加商品'"
+      width="600px"
+      destroy-on-close
+    >
       <ElForm :model="form" label-width="120px" size="small">
         <ElFormItem label="商品编码">
           <ElInput v-model="form.code" />
@@ -517,54 +586,88 @@ const warningBoxesLabel = (p: Product) => {
           <template #label>
             <span class="label-with-help">
               每箱瓶数
-              <HelpTip
-                inline
-                content="普通商品：用于箱零瓶展示与预警换算。\n组合品（箱规）：必须与「换算比例」相同，表示 1 个箱规单位折多少瓶规；不可单独乱填。"
-              />
+              <HelpTip inline content="用于箱/零头展示与预警换算。组合品时与换算比例一致。" />
             </span>
           </template>
-          <ElInputNumber
-            v-model="form.bottlesPerBox"
-            :min="1"
-            :disabled="form.isCombined"
-          />
-          <div v-if="form.isCombined" class="form-hint">
-            组合品已锁定：每箱瓶数 = 换算比例（改下方换算比例即可）
+          <div class="field-inline">
+            <ElInputNumber
+              v-model="form.bottlesPerBox"
+              :min="1"
+              :disabled="form.isCombined"
+              style="width: 160px"
+            />
+            <ElTag v-if="form.isCombined" size="small" type="info" effect="plain">随换算比例锁定</ElTag>
           </div>
         </ElFormItem>
         <ElFormItem label="当前库存(瓶)">
-          <ElInputNumber v-model="form.stock" />
+          <ElInputNumber v-model="form.stock" :min="0" :precision="0" />
           <div class="form-hint">
-            {{ formatQtyWithUnits(form.stock, form) }}（主数据参考值；实库以库存导入为准，按编码区分瓶/箱）
+            {{ formatProductQtyFull(form.stock, form) }}（参考值；实库以库存导入为准）
           </div>
         </ElFormItem>
         <ElFormItem>
           <template #label>
             <span class="label-with-help">
               预警阈值(箱)
-              <HelpTip inline content="按箱录入；保存时按「箱×每箱瓶数」换算成瓶，用于库存预警比对" />
+              <HelpTip inline content="按整数箱录入；保存时按「箱×每箱瓶数」换算成瓶" />
             </span>
           </template>
-          <ElInputNumber v-model="form.warningBoxes" :min="0" :step="0.5" :precision="3" />
-          <div class="form-hint">折合 {{ formWarningBottles }} {{ form.bottleUnit || '瓶' }}</div>
+          <ElInputNumber v-model="form.warningBoxes" :min="0" :step="1" :precision="0" />
+          <div class="form-hint">
+            {{
+              formatWarningBoxesDisplay({
+                warningThreshold: formWarningBottles,
+                bottlesPerBox: form.bottlesPerBox,
+                boxUnit: form.boxUnit,
+                bottleUnit: form.bottleUnit,
+                name: form.name,
+              }).full
+            }}
+          </div>
         </ElFormItem>
-        <ElFormItem label="箱规/组合">
-          <ElCheckbox v-model="form.isCombined">箱规编码（组合品）</ElCheckbox>
-        </ElFormItem>
-        <ElFormItem v-if="form.isCombined" label="基础瓶规编码">
-          <ElSelect v-model="form.combineProductCode" placeholder="请选择基础瓶规商品">
-            <ElOption
-              v-for="product in store.baseProducts"
-              :key="product.code"
-              :label="`${product.code} - ${product.name}`"
-              :value="product.code"
-            />
-          </ElSelect>
-        </ElFormItem>
-        <ElFormItem v-if="form.isCombined" label="换算比例">
-          <ElInputNumber v-model="form.combineRatio" :min="1" />
-          <span style="margin-left: 8px;">（1箱规 = N瓶规，同时写入每箱瓶数）</span>
-        </ElFormItem>
+
+        <div class="combine-panel">
+          <div class="combine-panel__head">
+            <ElCheckbox v-model="form.isCombined">箱规 / 组合品</ElCheckbox>
+            <ElTag v-if="form.isCombined" size="small" type="warning" effect="plain">
+              1 箱规 = N 瓶规
+            </ElTag>
+            <span v-else class="combine-panel__hint">仅箱规编码需要勾选</span>
+          </div>
+          <div v-show="form.isCombined" class="combine-panel__body">
+            <ElFormItem label="基础瓶规编码" class="combine-panel__item">
+              <ElSelect
+                v-model="form.combineProductCode"
+                filterable
+                clearable
+                placeholder="选择对应的瓶规商品"
+                style="width: 100%"
+              >
+                <ElOption
+                  v-for="product in store.baseProducts"
+                  :key="product.code"
+                  :label="`${product.code} - ${product.name}`"
+                  :value="product.code"
+                />
+              </ElSelect>
+            </ElFormItem>
+            <ElFormItem label="换算比例" class="combine-panel__item">
+              <div class="field-inline">
+                <ElInputNumber
+                  v-model="form.combineRatio"
+                  :min="1"
+                  :precision="0"
+                  controls-position="right"
+                  style="width: 180px"
+                />
+                <span class="form-hint inline">同步写入每箱瓶数</span>
+              </div>
+            </ElFormItem>
+            <p v-if="!store.baseProducts.length" class="combine-panel__empty">
+              暂无可用的瓶规商品，请先添加非组合的瓶规商品。
+            </p>
+          </div>
+        </div>
       </ElForm>
       <template #footer>
         <ElButton size="small" @click="dialogVisible = false">取消</ElButton>
@@ -590,12 +693,12 @@ const warningBoxesLabel = (p: Product) => {
           <ElInputNumber
             v-model="batchForm.warningBoxes"
             :min="0"
-            :step="0.5"
-            :precision="3"
+            :step="1"
+            :precision="0"
             :disabled="!batchForm.applyWarning"
             style="width: 160px"
           />
-          <span class="form-hint inline">统一箱数 → 各商品 × 各自每箱瓶数</span>
+          <span class="form-hint inline">统一整数箱 → 各商品 × 各自每箱瓶数</span>
         </ElFormItem>
         <ElFormItem>
           <template #label>
@@ -679,6 +782,138 @@ const warningBoxesLabel = (p: Product) => {
 .form-hint.inline {
   margin-top: 0;
   margin-left: 8px;
+}
+
+.stock-warning {
+  color: #f56c6c;
+  font-weight: 600;
+}
+
+.qty-text {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  gap: 1px;
+}
+.qty-num {
+  font-weight: 600;
+}
+.qty-sep {
+  margin: 0 3px;
+  color: #909399;
+}
+.qty-unit-box {
+  color: #606266;
+  font-weight: 500;
+}
+.qty-unit-small {
+  display: inline-block;
+  margin-left: 1px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: #e8f8ef;
+  color: #067a3e;
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.qty-warn-sub {
+  margin-left: 4px;
+  font-size: 11px;
+  color: #909399;
+  font-weight: 400;
+}
+.stock-warning .qty-unit-small {
+  background: #fde2e2;
+  color: #f56c6c;
+}
+.stock-warning .qty-num,
+.stock-warning .qty-unit-box {
+  color: #f56c6c;
+}
+
+.product-table :deep(.el-table__cell) {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+.product-table :deep(.el-table__body .cell) {
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.product-table :deep(.col-unit .cell) {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.product-table :deep(.col-actions .cell) {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+/* 库存预警整行浅红底，便于仓管扫视 */
+.product-table :deep(.product-row--warning > td.el-table__cell) {
+  background-color: #fff5f5 !important;
+}
+.product-table :deep(.product-row--warning:hover > td.el-table__cell) {
+  background-color: #ffecec !important;
+}
+.product-table :deep(.el-table__body tr.product-row--warning.el-table__row--striped > td.el-table__cell) {
+  background-color: #fff1f1 !important;
+}
+.product-table :deep(.el-table__body tr.product-row--warning.el-table__row--striped:hover > td.el-table__cell) {
+  background-color: #ffe8e8 !important;
+}
+
+.field-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.combine-panel {
+  margin: 8px 0 4px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #f5f7fa;
+  border: 1px solid #e4e7ed;
+}
+.combine-panel__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.combine-panel__hint {
+  font-size: 12px;
+  color: var(--erp-text-muted);
+}
+.combine-panel__body {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e4e7ed;
+  min-height: 88px;
+}
+.combine-panel__item {
+  margin-bottom: 14px;
+}
+.combine-panel__item:last-of-type {
+  margin-bottom: 4px;
+}
+.combine-panel__empty {
+  margin: 0;
+  font-size: 12px;
+  color: #e6a23c;
 }
 
 .label-with-help {

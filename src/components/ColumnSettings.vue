@@ -1,12 +1,18 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import { ElButton, ElCheckbox, ElPopover } from 'element-plus';
+import { ElButton, ElCheckbox, ElPopover, ElIcon } from 'element-plus';
+import { Setting } from '@element-plus/icons-vue';
 import type { ColumnMeta } from '../composables/useTableColumnPrefs';
 
-defineProps<{
-  columns: ColumnMeta[];
-  isVisible: (key: string) => boolean;
-}>();
+withDefaults(
+  defineProps<{
+    columns: ColumnMeta[];
+    isVisible: (key: string) => boolean;
+    /** gear：表头齿轮；button：工具栏文字按钮 */
+    variant?: 'button' | 'gear';
+  }>(),
+  { variant: 'button' },
+);
 
 const emit = defineEmits<{
   toggle: [key: string, visible: boolean];
@@ -46,13 +52,23 @@ const onDragEnd = () => {
 </script>
 
 <template>
-  <ElPopover placement="bottom-end" :width="300" trigger="click">
+  <ElPopover placement="bottom-start" :width="300" trigger="click" :teleported="true">
     <template #reference>
-      <ElButton size="small">列设置</ElButton>
+      <button
+        v-if="variant === 'gear'"
+        type="button"
+        class="col-set-gear"
+        title="列显隐设置"
+        aria-label="列显隐设置"
+        @click.stop
+      >
+        <ElIcon :size="16"><Setting /></ElIcon>
+      </button>
+      <ElButton v-else size="small">列设置</ElButton>
     </template>
     <div class="col-set">
       <div class="col-set__head">
-        <span>拖拽调整顺序 · 勾选显隐</span>
+        <span>拖拽排序 · 勾选显隐</span>
         <div class="col-set__actions">
           <ElButton link type="primary" size="small" @click="emit('showAll')">全显</ElButton>
           <ElButton link size="small" @click="emit('reset')">重置</ElButton>
@@ -89,6 +105,25 @@ const onDragEnd = () => {
 </template>
 
 <style scoped>
+.col-set-gear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  vertical-align: middle;
+  line-height: 1;
+}
+.col-set-gear:hover {
+  color: #1677ff;
+  background: #eff6ff;
+}
 .col-set__head {
   display: flex;
   align-items: center;

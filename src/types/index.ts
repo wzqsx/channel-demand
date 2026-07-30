@@ -36,8 +36,17 @@ export interface Channel {
   code: string;
   name: string;
   warehouseIds: string[];
-  /** 1–20，数字越小优先级越高；仅在同一主体内比较 */
+  /** 1–20，数字越小优先级越高；在各关联主体内分别参与占库存竞争 */
   priority: number;
+  /**
+   * 关联主体（可多选）。由勾选仓库推导并与表单勾选合并。
+   * 旧数据可能只有 companyId，读取时请用 getChannelCompanyIds。
+   */
+  companyIds: string[];
+  /**
+   * 主主体（兼容字段，一般为 companyIds[0]）。
+   * 要货单仍按单主体开单；筛选时用「渠道是否包含该主体」。
+   */
   companyId: string;
   /** 停用后不参与要货占库存与渠道下拉 */
   enabled: boolean;

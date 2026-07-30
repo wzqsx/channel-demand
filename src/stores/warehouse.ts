@@ -52,11 +52,19 @@ export const useWarehouseStore = defineStore('warehouse', () => {
     warehouses.value.push({ ...warehouse, id: newWarehouseId() });
   };
 
-  const updateWarehouse = (id: string, warehouse: Partial<Warehouse>) => {
-    const index = warehouses.value.findIndex(w => w.id === id);
-    if (index !== -1) {
-      warehouses.value[index] = { ...warehouses.value[index], ...warehouse };
+  const updateWarehouse = (id: string, patch: Partial<Warehouse>) => {
+    const tid = String(id || '').trim();
+    let index = warehouses.value.findIndex(w => String(w.id) === tid);
+    // 兜底：历史重复 id 时按编码定位
+    if (index === -1 && patch.code) {
+      const c = norm(patch.code);
+      index = warehouses.value.findIndex(w => norm(w.code) === c);
     }
+    if (index === -1) return false;
+    const next = { ...warehouses.value[index], ...patch };
+    // 整表替换，避免 ElTable / computed 同引用不刷新
+    warehouses.value = warehouses.value.map((w, i) => (i === index ? next : w));
+    return true;
   };
 
   const deleteWarehouse = (id: string) => {
@@ -99,8 +107,17 @@ export const useWarehouseStore = defineStore('warehouse', () => {
     return undefined;
   };
 
-  const getWarehousesByIds = (ids: string[]) =>
-    warehouses.value.filter(w => ids.includes(w.id));
+  const getWarehousesByIds = (ids: string[]) => {
+    const set = new Set((ids || []).map(String));
+    const seen = new Set<string>();
+    const out: Warehouse[] = [];
+    for (const w of warehouses.value) {
+      if (!set.has(w.id) || seen.has(w.id)) continue;
+      seen.add(w.id);
+      out.push(w);
+    }
+    return out;
+  };
 
   const getWarehousesByCompany = (companyId: string) =>
     warehouses.value.filter(w => w.companyId === companyId);
@@ -134,11 +151,11 @@ export const useWarehouseStore = defineStore('warehouse', () => {
 
   const batchUpdate = (ids: string[], patchFn: (w: Warehouse) => Partial<Warehouse>) => {
     let n = 0;
-    const idSet = new Set(ids);
-    warehouses.value.forEach((w, i) => {
-      if (!idSet.has(w.id)) return;
-      warehouses.value[i] = { ...w, ...patchFn(w) };
+    const idSet = new Set(ids.map(String));
+    warehouses.value = warehouses.value.map(w => {
+      if (!idSet.has(String(w.id))) return w;
       n += 1;
+      return { ...w, ...patchFn(w) };
     });
     return n;
   };
@@ -156,10 +173,23 @@ export const useWarehouseStore = defineStore('warehouse', () => {
     return n;
   };
 
+  /** 把仓库上的旧主体 id 映射到去重后的标准 id */
+  const remapCompanyIds = (idMap: Record<string, string>) => {
+    let n = 0;
+    warehouses.value = warehouses.value.map(w => {
+      const nextId = idMap[w.companyId];
+      if (!nextId || nextId === w.companyId) return w;
+      n += 1;
+      return { ...w, companyId: nextId };
+    });
+    return n;
+  };
+
   return {
     warehouses,
     initWarehouses,
     ensureUniqueIds,
+    remapCompanyIds,
     addWarehouse,
     updateWarehouse,
     deleteWarehouse,

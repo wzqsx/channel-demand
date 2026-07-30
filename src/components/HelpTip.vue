@@ -62,7 +62,23 @@ const open = ref(false);
 const visible = computed(() => pinned.value || open.value);
 
 const safeHtml = computed(() => {
-  const raw = String(props.content || '').replace(/\\n/g, '\n');
+  const raw = String(props.content || '').replace(/\\n/g, '\n').trim();
+  const lines = raw.split(/\n+/).map(l => l.trim()).filter(Boolean);
+  const numbered = lines.length > 1 && lines.every(l => /^\d+[\.．、]/.test(l));
+  if (numbered) {
+    const items = lines
+      .map(l =>
+        l
+          .replace(/^\d+[\.．、]\s*/, '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;'),
+      )
+      .map(t => `<li>${t}</li>`)
+      .join('');
+    return `<ol class="app-help-tip__ol">${items}</ol>`;
+  }
   return raw
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -122,5 +138,15 @@ function togglePin() {
 }
 .app-help-tip__body {
   white-space: normal;
+}
+.app-help-tip__ol {
+  margin: 0;
+  padding-left: 1.25em;
+}
+.app-help-tip__ol li {
+  margin: 4px 0;
+}
+.app-help-tip__ol li + li {
+  margin-top: 6px;
 }
 </style>

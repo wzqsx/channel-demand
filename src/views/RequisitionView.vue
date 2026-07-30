@@ -31,6 +31,7 @@ import { assertRequisitionScope, getChannelAllowedWarehouses } from '../utils/co
 import { getBottleEquivalentStock } from '../utils/packStock';
 import { formatProductQty } from '../utils/qtyDisplay';
 import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyFilter';
+import { formatCompanyLabel, formatCompanyNameOnly } from '../utils/companyDisplay';
 
 const router = useRouter();
 const requisitionStore = useRequisitionStore();
@@ -70,13 +71,75 @@ const filteredChannels = computed(() => {
   return channelStore.getChannelsSortedByPriority(form.value.companyId);
 });
 
-/** 渠道可用仓库：强制同主体 */
+const selectedChannel = computed(() =>
+  form.value.channelId ? channelStore.getChannelById(form.value.channelId) : undefined,
+);
+
+/**
+ * 渠道全部绑定仓均可选（支持多主体发货）。
+ */
 const filteredWarehouses = computed(() => {
-  if (!form.value.channelId || !form.value.companyId) return [];
-  return getChannelAllowedWarehouses(form.value.channelId).filter(
-    w => w.companyId === form.value.companyId,
-  );
+  if (!form.value.channelId) return [];
+  if (!selectedChannel.value) return [];
+  return getChannelAllowedWarehouses(form.value.channelId);
 });
+
+type WhListRow = {
+  id: string;
+  name: string;
+  code: string;
+  companyId: string;
+  companyName: string;
+};
+
+/** 展示用：全部绑定仓，并标注所属主体 */
+const channelWarehouseRows = computed((): WhListRow[] => {
+  return filteredWarehouses.value.map(w => {
+    const c = companyStore.getCompanyById(w.companyId);
+    return {
+      id: w.id,
+      name: w.name,
+      code: w.code,
+      companyId: w.companyId,
+      companyName: c ? formatCompanyNameOnly(c) : w.companyId,
+    };
+  });
+});
+
+const multiCompanyBound = computed(() => {
+  const ids = new Set(channelWarehouseRows.value.map(r => r.companyId));
+  return ids.size > 1;
+});
+
+/** 渠道绑定仓总数（下拉文案） */
+const channelBoundWhCount = (channelId: string) =>
+  getChannelAllowedWarehouses(channelId).length;
+
+const channelOptionLabel = (ch: { id: string; name: string; priority: number; warehouseIds?: string[] }) => {
+  const total = channelBoundWhCount(ch.id);
+  return `${ch.name}（P${ch.priority} · 绑定${total}仓）`;
+};
+
+const channelWarehouseHint = computed(() => {
+  const ch = selectedChannel.value;
+  if (!ch) return '请先选择渠道；选中后将自动勾选该渠道已绑定的全部仓库';
+  const total = channelWarehouseRows.value.length;
+  if (!total) {
+    return `渠道「${ch.name}」尚未绑定仓库，请先到「渠道管理」勾选`;
+  }
+  if (multiCompanyBound.value) {
+    return `已自动勾选渠道「${ch.name}」绑定的全部 ${total} 个仓库（含多主体仓，可按需取消）`;
+  }
+  return `已按渠道「${ch.name}」自动勾选绑定仓库（共 ${total} 个，可按需取消）`;
+});
+
+const selectAllBoundWarehouses = () => {
+  form.value.warehouseIds = filteredWarehouses.value.map(w => w.id);
+};
+
+const selectedSelectableCount = computed(
+  () => form.value.warehouseIds.filter(id => filteredWarehouses.value.some(w => w.id === id)).length,
+);
 
 const listRows = computed(() => {
   return requisitionStore.requisitions.filter(r => {
@@ -108,8 +171,8 @@ const handleCompanyChange = () => {
 };
 
 const handleChannelChange = () => {
-  // 只切换可选仓库列表，绝不自动勾选；由用户逐个勾
-  form.value.warehouseIds = [];
+  // 自动勾选渠道已绑定的全部仓库（可含多主体仓，可按需取消）
+  selectAllBoundWarehouses();
 };
 
 const clearWarehouses = () => {
@@ -118,14 +181,21 @@ const clearWarehouses = () => {
 
 const toggleWarehouse = (id: string) => {
   if (!id) return;
+  // 禁止勾选渠道外仓库
+  if (!filteredWarehouses.value.some(w => w.id === id)) return;
   const cur = form.value.warehouseIds;
   form.value.warehouseIds = cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id];
 };
 
 const isWarehouseChecked = (id: string) => form.value.warehouseIds.includes(id);
 
+const goChannelManage = () => {
+  importDialogVisible.value = false;
+  router.push('/channels');
+};
+
 const companyFilterOptions = computed(() =>
-  companyStore.companies.map(c => ({ value: c.id, label: c.name })),
+  companyStore.companies.map(c => ({ value: c.id, label: formatCompanyLabel(c) })),
 );
 
 const parseExcelRows = (jsonData: any[]): ImportRequisitionData[] => {
@@ -225,6 +295,7 @@ const checkStock = () => {
       eq.baseCode,
       form.value.channelId,
       form.value.warehouseIds,
+      form.value.companyId,
     );
     const baseProduct = productStore.getProductByCode(eq.baseCode) || product;
     const checked = requisitionStore.checkStockAvailability(
@@ -260,7 +331,13 @@ const runStockCheck = () => {
 const handleSubmit = async () => {
   if (!form.value.companyId) return ElMessage.error('请选择所属主体');
   if (!form.value.channelId) return ElMessage.error('请选择渠道');
-  if (!form.value.warehouseIds.length) return ElMessage.error('请选择仓库');
+  // 提交前剔除渠道外仓库，防止脏数据
+  const allowed = new Set(filteredWarehouses.value.map(w => w.id));
+  form.value.warehouseIds = form.value.warehouseIds.filter(id => allowed.has(id));
+  if (!filteredWarehouses.value.length) {
+    return ElMessage.error('该渠道未绑定仓库，请先到「渠道管理」勾选仓库');
+  }
+  if (!form.value.warehouseIds.length) return ElMessage.error('请从渠道已绑定仓库中选择');
   if (!form.value.weekStart) return ElMessage.error('请选择周起始');
   if (!importData.value.length) return ElMessage.error('请导入要货数据');
 
@@ -348,7 +425,10 @@ const goSalesCompare = (row: Requisition) => {
 };
 
 const getChannelName = (id: string) => channelStore.getChannelById(id)?.name || id;
-const getCompanyName = (id: string) => companyStore.getCompanyById(id)?.name || id;
+const getCompanyName = (id: string) => {
+  const c = companyStore.getCompanyById(id);
+  return c ? formatCompanyNameOnly(c) : id;
+};
 const getWarehouseNames = (ids: string[]) =>
   ids.map(id => warehouseStore.getWarehouseById(id)?.name || id).join('、');
 
@@ -494,46 +574,85 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
     </div>
 
     <!-- 新建要货 -->
-    <ElDialog v-model="importDialogVisible" title="新建要货单" width="960px" destroy-on-close>
-      <ElForm :model="form" label-width="88px" size="small">
+    <ElDialog
+      v-model="importDialogVisible"
+      title="新建要货单"
+      width="960px"
+      destroy-on-close
+      class="req-dialog"
+      align-center
+    >
+      <ElForm :model="form" label-width="88px" size="small" class="req-form">
         <div class="form-grid">
-          <ElFormItem label="周起始" required>
+          <ElFormItem label="周起始" required class="form-cell">
             <ElDatePicker
               v-model="form.weekStart"
               type="date"
               value-format="YYYY-MM-DD"
-              style="width: 100%"
+              class="req-control"
               @change="(v: string) => { if (v) form.weekStart = weekStartSaturday(v) }"
             />
           </ElFormItem>
-          <ElFormItem label="主体" required>
-            <ElSelect v-model="form.companyId" placeholder="所属主体" @change="handleCompanyChange" style="width: 100%">
-              <ElOption v-for="c in companyStore.companies" :key="c.id" :label="c.name" :value="c.id" />
+          <ElFormItem label="主体" required class="form-cell">
+            <ElSelect
+              v-model="form.companyId"
+              placeholder="所属主体"
+              filterable
+              class="req-control"
+              @change="handleCompanyChange"
+            >
+              <ElOption
+                v-for="c in companyStore.companies"
+                :key="c.id"
+                :label="formatCompanyLabel(c)"
+                :value="c.id"
+              />
             </ElSelect>
           </ElFormItem>
-          <ElFormItem label="渠道" required>
-            <ElSelect v-model="form.channelId" placeholder="同主体渠道" @change="handleChannelChange" style="width: 100%">
+          <ElFormItem label="渠道" required class="form-cell form-cell--full">
+            <ElSelect
+              v-model="form.channelId"
+              placeholder="请选择同公司渠道"
+              filterable
+              class="req-control"
+              :disabled="!form.companyId"
+              @change="handleChannelChange"
+            >
               <ElOption
                 v-for="ch in filteredChannels"
                 :key="ch.id"
-                :label="`${ch.name} (P${ch.priority})`"
+                :label="channelOptionLabel(ch)"
                 :value="ch.id"
               />
             </ElSelect>
           </ElFormItem>
-          <ElFormItem label="仓库" required>
-            <div class="wh-box">
+          <ElFormItem label="仓库" required class="form-cell form-cell--full">
+            <div class="wh-box" :class="{ 'wh-box--locked': !form.channelId }">
               <div class="wh-box__bar">
-                <span class="wh-box__hint">
-                  已选 {{ form.warehouseIds.length }}/{{ filteredWarehouses.length }} · 可逐个勾/取消；旧数据若全勾了，先点清空
-                </span>
-                <ElButton link size="small" :disabled="!form.warehouseIds.length" @click="clearWarehouses">
-                  清空已选
-                </ElButton>
+                <div class="wh-box__hint">{{ channelWarehouseHint }}</div>
+                <div class="wh-box__bar-actions">
+                  <ElButton
+                    link
+                    type="primary"
+                    size="small"
+                    :disabled="!filteredWarehouses.length"
+                    @click="selectAllBoundWarehouses"
+                  >
+                    全选绑定仓
+                  </ElButton>
+                  <ElButton
+                    link
+                    size="small"
+                    :disabled="!form.warehouseIds.length"
+                    @click="clearWarehouses"
+                  >
+                    清空
+                  </ElButton>
+                </div>
               </div>
-              <div v-if="filteredWarehouses.length" class="wh-box__list">
+              <div v-if="channelWarehouseRows.length" class="wh-box__list">
                 <div
-                  v-for="(w, idx) in filteredWarehouses"
+                  v-for="(w, idx) in channelWarehouseRows"
                   :key="`${w.code}__${w.id}__${idx}`"
                   class="wh-box__item"
                   role="checkbox"
@@ -545,10 +664,28 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
                 >
                   <span class="wh-box__check" :class="{ on: isWarehouseChecked(w.id) }" />
                   <span class="wh-box__text">{{ w.name }}（{{ w.code }}）</span>
+                  <ElTag
+                    v-if="multiCompanyBound"
+                    size="small"
+                    type="info"
+                    effect="plain"
+                    class="wh-box__tag"
+                  >
+                    {{ w.companyName }}
+                  </ElTag>
                 </div>
               </div>
               <div v-else class="wh-box__empty">
-                {{ form.channelId ? '该渠道暂无可用仓库' : '请先选择主体和渠道' }}
+                <template v-if="!form.companyId || !form.channelId">
+                  请先选择主体和渠道
+                </template>
+                <template v-else>
+                  该渠道在「渠道管理」中未绑定仓库，无法在此勾选。
+                  <ElButton link type="primary" size="small" @click="goChannelManage">去渠道管理绑定</ElButton>
+                </template>
+              </div>
+              <div v-if="channelWarehouseRows.length" class="wh-box__meta">
+                已选 {{ selectedSelectableCount }} / {{ channelWarehouseRows.length }}
               </div>
             </div>
           </ElFormItem>
@@ -673,8 +810,72 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
 
 .form-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 16px;
+  row-gap: 0;
+  align-items: start;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.form-cell {
+  margin-bottom: 14px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.form-cell--full {
+  grid-column: 1 / -1;
+}
+
+.req-form {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.req-form :deep(.el-form-item) {
+  align-items: flex-start;
+  margin-right: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.req-form :deep(.el-form-item__label) {
+  height: 32px;
+  line-height: 32px;
+  padding-right: 8px;
+  box-sizing: border-box;
+}
+
+.req-form :deep(.el-form-item__content) {
+  line-height: normal;
+  min-width: 0;
+  max-width: 100%;
+  flex: 1;
+  overflow: visible;
+  box-sizing: border-box;
+}
+
+/* 统一输入控件：保证边框完整、宽度不溢出裁切 */
+.req-form :deep(.req-control) {
+  width: 100% !important;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.req-form :deep(.req-control .el-select__wrapper),
+.req-form :deep(.req-control .el-input__wrapper),
+.req-form :deep(.req-control.el-date-editor) {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.req-form :deep(.wh-box) {
+  line-height: 1.4;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .import-block {
@@ -717,6 +918,9 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
   padding: 8px 10px;
   background: #fafbfc;
 }
+.wh-box--locked {
+  opacity: 0.72;
+}
 .wh-box__bar {
   display: flex;
   align-items: center;
@@ -725,15 +929,37 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
 }
 .wh-box__hint {
   flex: 1;
+  font-size: 12px;
+  color: var(--erp-text-muted);
+  line-height: 1.45;
+}
+.wh-box__hint strong {
+  margin: 0 2px;
+  color: var(--erp-text);
+  font-weight: 600;
+}
+.wh-box__hint-ok {
+  color: var(--erp-primary) !important;
+}
+.wh-box__hint-warn {
+  color: #b88230 !important;
+}
+.wh-box__bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.wh-box__meta {
+  margin-top: 6px;
   font-size: 11px;
   color: var(--erp-text-muted);
-  line-height: 1.4;
 }
 .wh-box__list {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 160px;
+  max-height: 200px;
   overflow-y: auto;
 }
 .wh-box__item {
@@ -742,7 +968,7 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
   gap: 8px;
   min-height: 28px;
   margin: 0;
-  padding: 2px 4px;
+  padding: 4px 6px;
   border-radius: 4px;
   cursor: pointer;
   font-size: 13px;
@@ -777,12 +1003,44 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
   border-width: 0 2px 2px 0;
   transform: rotate(45deg);
 }
+.wh-box__check.muted {
+  background: #ebeef5;
+  border-color: #dcdfe6;
+}
 .wh-box__text {
   line-height: 1.3;
+  flex-shrink: 0;
+}
+.wh-box__tag {
+  margin-left: auto;
+  flex-shrink: 1;
+  max-width: 55%;
 }
 .wh-box__empty {
   padding: 10px 0;
   font-size: 12px;
   color: var(--erp-text-muted);
+}
+</style>
+
+<!-- dialog 挂到 body，需非 scoped 才能作用到外层，避免右侧边框被裁切 -->
+<style>
+.req-dialog.el-dialog {
+  overflow: visible;
+}
+.req-dialog .el-dialog__body {
+  overflow: visible;
+  padding-right: 20px;
+  padding-left: 20px;
+  box-sizing: border-box;
+}
+.req-dialog .el-dialog__header {
+  padding-right: 20px;
+  padding-left: 20px;
+}
+.req-dialog .req-form .el-select__wrapper,
+.req-dialog .req-form .el-input__wrapper {
+  box-sizing: border-box;
+  min-height: 32px;
 }
 </style>

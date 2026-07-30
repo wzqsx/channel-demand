@@ -28,6 +28,7 @@ import { weekStartSaturday, weekLabel } from '../utils/week';
 import { readExcelFromEvent, exportRows, downloadTemplate, cell, cellNum } from '../utils/excel';
 import { formatProductQty } from '../utils/qtyDisplay';
 import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyFilter';
+import { formatCompanyLabel, formatCompanyNameOnly } from '../utils/companyDisplay';
 
 const route = useRoute();
 const requisitionStore = useRequisitionStore();
@@ -39,7 +40,7 @@ const weekStart = ref(weekStartSaturday());
 const companyIds = useRememberedCompanyFilter('sales-compare');
 
 const companyFilterOptions = computed(() =>
-  companyStore.companies.map(c => ({ value: c.id, label: c.name })),
+  companyStore.companies.map(c => ({ value: c.id, label: formatCompanyLabel(c) })),
 );
 
 const detailVisible = ref(false);
@@ -115,7 +116,10 @@ const statItems = computed((): StatItem[] => [
 ]);
 
 const getChannelName = (id: string) => channelStore.getChannelById(id)?.name || id;
-const getCompanyName = (id: string) => companyStore.getCompanyById(id)?.name || id;
+const getCompanyName = (id: string) => {
+  const c = companyStore.getCompanyById(id);
+  return c ? formatCompanyNameOnly(c) : id;
+};
 
 const openDetail = (row: SummaryRow) => {
   detailTitle.value = `${getChannelName(row.channelId)} · ${weekLabel(weekStart.value)}`;

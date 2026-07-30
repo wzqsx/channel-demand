@@ -82,21 +82,33 @@ async function main() {
     code: 'CH-SC',
     name: '自检渠道',
     companyId: added.id,
+    companyIds: [added.id],
     warehouseIds: [newWh.id, 'W001'],
     priority: 1,
     enabled: true,
   });
-  const newCh = ch.channels.find(c => c.name === '自检渠道' && c.companyId === added.id);
-  ok('渠道创建时剥离跨主体仓库', !!newCh && newCh.warehouseIds.length === 1 && newCh.warehouseIds[0] === newWh.id);
-  ok('渠道可用仓仅同主体', getChannelAllowedWarehouses(newCh.id).every(w => w.companyId === added.id));
+  const newCh = ch.channels.find(c => c.name === '自检渠道');
+  ok(
+    '渠道可跨主体绑定多仓库',
+    !!newCh &&
+      newCh.warehouseIds.includes(newWh.id) &&
+      newCh.warehouseIds.includes('W001') &&
+      newCh.companyIds.includes(added.id) &&
+      newCh.companyIds.includes('COMP001'),
+  );
+  ok(
+    '按主体过滤渠道可用仓',
+    getChannelAllowedWarehouses(newCh.id, added.id).every(w => w.companyId === added.id) &&
+      getChannelAllowedWarehouses(newCh.id, added.id).some(w => w.id === newWh.id),
+  );
 
-  console.log('\n[4] 要货主体隔离');
-  const bad = assertRequisitionScope({
+  console.log('\n[4] 要货范围（支持多主体仓）');
+  const multiOk = assertRequisitionScope({
     companyId: added.id,
     channelId: newCh.id,
     warehouseIds: [newWh.id, 'W001'],
   });
-  ok('跨主体仓库要货被拒', bad.ok === false);
+  ok('渠道绑定的跨主体仓库可一起要货', multiOk.ok === true);
   const good = assertRequisitionScope({
     companyId: added.id,
     channelId: newCh.id,
@@ -104,15 +116,22 @@ async function main() {
   });
   ok('同主体要货通过', good.ok === true);
 
-  const seedCh = ch.channels.find(c => c.companyId === 'COMP001');
+  const seedCh = ch.channels.find(c => c.companyId === 'COMP001' && !c.companyIds?.includes(added.id));
   if (seedCh) {
     const cross = assertRequisitionScope({
       companyId: added.id,
       channelId: seedCh.id,
       warehouseIds: [newWh.id],
     });
-    ok('渠道与主体不匹配被拒', cross.ok === false);
+    ok('渠道未关联该主体时要货被拒', cross.ok === false);
   }
+
+  const notBound = assertRequisitionScope({
+    companyId: added.id,
+    channelId: newCh.id,
+    warehouseIds: [newWh.id, 'W999_NOT_EXIST'],
+  });
+  ok('非渠道绑定仓库被拒', notBound.ok === false);
 
   console.log('\n[5] 完成率口径 = 销货/要货（百分比，1位小数）');
   ok('完成率 50/100 = 50', completionRate(50, 100) === 50);
@@ -130,9 +149,56 @@ async function main() {
   console.log('\n[7] 数量单位换算展示');
   const { formatQtyWithUnits, boxesToBottles } = await import('../src/utils/qtyDisplay.ts');
   ok('240瓶→10箱', formatQtyWithUnits(240, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '10箱');
-  ok('243瓶→10箱零3瓶', formatQtyWithUnits(243, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '10箱零3瓶');
+  ok('243瓶→10箱＋3瓶', formatQtyWithUnits(243, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '10箱＋3瓶');
   ok('3瓶→3瓶', formatQtyWithUnits(3, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '3瓶');
-  ok('负243→负10箱零3瓶', formatQtyWithUnits(-243, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '负10箱零3瓶');
+  ok('负243→负10箱＋3瓶', formatQtyWithUnits(-243, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '负10箱＋3瓶');
+  ok('瓶单位误填箱→不出现双箱', formatQtyWithUnits(80, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '箱' }) === '3箱＋8瓶');
+  ok('盒单位正常', formatQtyWithUnits(80, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '盒' }) === '3箱＋8盒');
+  ok('打单位保留', formatQtyWithUnits(26, { bottlesPerBox: 12, boxUnit: '箱', bottleUnit: '打' }) === '2箱＋2打');
+  ok(
+    '牛奶300→12箱＋12盒',
+    formatQtyWithUnits(300, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '盒', productName: '牛奶250ml' }) ===
+      '12箱＋12盒',
+  );
+  ok(
+    '牛奶误填箱单位仍正确',
+    formatQtyWithUnits(300, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '箱', productName: '牛奶250ml' }) ===
+      '12箱＋12盒',
+  );
+  const { formatProductStockCell, splitProductQty, formatWarningBoxesDisplay, snapWarningToWholeBoxes } =
+    await import('../src/utils/qtyDisplay.ts');
+  ok(
+    '表格单元格牛奶绝不箱＋箱',
+    formatProductStockCell({
+      stock: 300,
+      bottlesPerBox: 24,
+      boxUnit: '箱',
+      bottleUnit: '箱',
+      name: '牛奶250ml',
+    }) === '12箱＋12盒',
+  );
+  const milkParts = splitProductQty(300, {
+    bottlesPerBox: 24,
+    boxUnit: '箱',
+    bottleUnit: '盒',
+    name: '牛奶250ml',
+  });
+  ok('split 零头单位=盒', milkParts.smallUnit === '盒' && milkParts.remainder === 12 && milkParts.boxes === 12);
+  ok(
+    '双箱兜底绝不复现',
+    !/箱[＋零+]\d+箱/.test(formatQtyWithUnits(300, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '箱' })),
+  );
+  ok('预警80对齐整箱→72', snapWarningToWholeBoxes(80, 24) === 72);
+  const warn = formatWarningBoxesDisplay({
+    warningThreshold: 72,
+    bottlesPerBox: 24,
+    boxUnit: '箱',
+    bottleUnit: '盒',
+    name: '牛奶250ml',
+  });
+  ok('预警展示=3箱', warn.main === '3箱');
+  ok('预警完整=3箱（共72盒）', warn.full === '3箱（共72盒）');
+  ok('预警绝不箱＋箱求余', !/[＋零]/.test(warn.main));
   ok('5箱×24=120瓶', boxesToBottles(5, 24) === 120);
 
   console.log('\n[8] 箱规库存折算进瓶规');
@@ -178,9 +244,30 @@ async function main() {
     ok('高优占用含已通过', higher >= 9999, `higher=${higher}`);
   }
 
-  console.log('\n[10] 要货 migrate 不炸');
-  req.migrateLegacy();
-  ok('migrateLegacy 可执行', true);
+  console.log('\n[10] 要货 migrate 保留跨主体仓');
+  const whB = wh.warehouses.find(w => w.companyId && w.companyId !== 'COMP001');
+  if (whB) {
+    req.requisitions.push({
+      id: 'SC-MULTI-WH',
+      companyId: 'COMP001',
+      channelId: ch.channels.find(c => c.companyId === 'COMP001')?.id || 'C001',
+      warehouseIds: ['W001', whB.id],
+      weekStart: week,
+      items: [{ id: '1', productCode: 'P001', productName: 'x', quantity: 1, remark: '' }],
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    });
+    req.migrateLegacy();
+    const kept = req.requisitions.find(r => r.id === 'SC-MULTI-WH');
+    ok(
+      'migrateLegacy 不剔除跨主体仓',
+      !!kept && kept.warehouseIds.includes('W001') && kept.warehouseIds.includes(whB.id),
+      `ids=${kept?.warehouseIds?.join(',')}`,
+    );
+  } else {
+    req.migrateLegacy();
+    ok('migrateLegacy 可执行（无跨主体仓样本）', true);
+  }
 
   console.log('\n────────────────────');
   if (fails.length) {

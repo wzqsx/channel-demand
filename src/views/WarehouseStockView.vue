@@ -17,9 +17,11 @@ import {
   ElMessage,
   ElMessageBox,
   ElTag,
+  ElDropdown,
+  ElDropdownMenu,
+  ElDropdownItem,
 } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
-import HelpTip from '../components/HelpTip.vue';
 import MultiCheckFilter from '../components/MultiCheckFilter.vue';
 import ColumnSettings from '../components/ColumnSettings.vue';
 import { useWarehouseStockStore } from '../stores/warehouseStock';
@@ -34,6 +36,7 @@ import { weekStartSaturday, weekLabel } from '../utils/week';
 import { readExcelFromEvent, exportRows, downloadTemplate, cell, cellNum } from '../utils/excel';
 import { formatProductQty } from '../utils/qtyDisplay';
 import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyFilter';
+import { formatCompanyLabel } from '../utils/companyDisplay';
 import { useTableColumnPrefs, type ColumnMeta } from '../composables/useTableColumnPrefs';
 import { getBottleEquivalentStock, resolveToBottleBase } from '../utils/packStock';
 
@@ -127,7 +130,7 @@ const onCompanyFilterChange = () => {
 };
 
 const companyFilterOptions = computed(() =>
-  companyStore.companies.map(c => ({ value: c.id, label: c.name })),
+  companyStore.companies.map(c => ({ value: c.id, label: formatCompanyLabel(c) })),
 );
 const warehouseFilterOptions = computed(() =>
   filteredWarehouses.value.map(w => ({ value: w.id, label: w.name })),
@@ -312,7 +315,10 @@ const getStockStatus = (
     availableOverride != null ? availableOverride : stock + inTransitStock;
   const gap = Math.max(0, demandQty - availableStock);
   if (gap > 0) {
-    return { type: 'danger' as const, text: `缺货缺口 ${gap}` };
+    return {
+      type: 'danger' as const,
+      text: `缺货缺口 ${formatProductQty(gap, productCode)}`,
+    };
   }
   if (availableStock < 0 || stock < 0) {
     return { type: 'danger' as const, text: '负库存' };
@@ -593,6 +599,14 @@ const handleTemplate = () => {
   downloadTemplate(headers, '库存导入模板');
 };
 
+const handleExcelCommand = (cmd: string | number) => {
+  if (cmd === 'import') triggerImport();
+  else if (cmd === 'export') handleExport();
+  else if (cmd === 'template') handleTemplate();
+  else if (cmd === 'fields') openFieldDialog();
+  else if (cmd === 'shortage') goShortageAlert();
+};
+
 // 字段管理相关方法
 const openFieldDialog = (field?: CustomFieldConfig) => {
   if (field) {
@@ -637,58 +651,62 @@ const handleFieldDelete = (key: string) => {
 <template>
   <PageShell
     title="库存导入"
-    help="本页是「当前库存状况」快照。商品按编码匹配（瓶/箱编码分开）；仓库可用名称或编码。\n本周需求按仓均分（多仓要货不重复全额），瓶规可用含箱规折算；停用渠道不计入。主体汇总缺口仍以「缺货与预警」为准。"
+    help-title="库存导入说明"
+    help="1. 本页是「当前库存」快照：商品按编码匹配（瓶/箱编码分开），仓库可用名称或编码。&#10;2. 「本周全量替换」会先自动快照备份再清空写入；未出现在 Excel 的 SKU 会丢失。增量导入只覆盖匹配行。&#10;3. 本周需求按仓均分（多仓不重复全额），瓶规可用含箱规折算；停用渠道不计。主体汇总缺口以「缺货与预警」为准。"
   >
     <template #toolbar>
-      <ElDatePicker
-        v-model="importWeekStart"
-        type="date"
-        value-format="YYYY-MM-DD"
-        placeholder="导入归属周"
-        size="small"
-        style="width: 150px"
-        @change="(v: string) => { if (v) importWeekStart = weekStartSaturday(v) }"
-      />
-      <MultiCheckFilter
-        v-model="searchCompanyIds"
-        :options="companyFilterOptions"
-        placeholder="主体(可多选)"
-        width="200px"
-        @update:model-value="onCompanyFilterChange"
-      />
-      <MultiCheckFilter
-        v-model="searchWarehouseIds"
-        :options="warehouseFilterOptions"
-        placeholder="仓库(可多选)"
-        width="200px"
-      />
-      <input
-        type="file"
-        accept=".xlsx,.xls"
-        class="import-input"
-        @change="handleImport"
-        ref="importInputRef"
-      />
-      <ElButton size="small" type="primary" @click="triggerReplaceImport()">本周全量替换</ElButton>
-      <HelpTip
-        inline
-        title="全量替换说明"
-        content="用 Excel 全量替换本周「当前库存状况」。\n仓库列可用「仓库名称」或「仓库编码」匹配（建议仓库编码=名称）。\n数量列「库存(瓶)/在途库存(瓶)」按瓶录入。\n旧数据会先自动快照备份；未出现在 Excel 中的 SKU 将丢失。"
-      />
-      <ElButton size="small" @click="triggerImport()">增量导入</ElButton>
-      <ElButton size="small" @click="handleExport">导出</ElButton>
-      <ElButton size="small" @click="handleTemplate">下载模板</ElButton>
-      <ElButton size="small" @click="goShortageAlert">缺货与预警</ElButton>
-      <ElButton size="small" @click="openFieldDialog()">字段管理</ElButton>
-      <ColumnSettings
-        :columns="settingsList"
-        :is-visible="isVisible"
-        @toggle="setVisible"
-        @move="moveColumn"
-        @reset="resetColumns"
-        @show-all="showAll"
-      />
-      <ElButton size="small" @click="openDialog()">手工添加</ElButton>
+      <div class="stock-toolbar">
+        <div class="stock-toolbar__left">
+          <ElDatePicker
+            v-model="importWeekStart"
+            type="date"
+            value-format="YYYY-MM-DD"
+            placeholder="导入归属周"
+            size="small"
+            class="stock-toolbar__date"
+            @change="(v: string) => { if (v) importWeekStart = weekStartSaturday(v) }"
+          />
+          <MultiCheckFilter
+            v-model="searchCompanyIds"
+            :options="companyFilterOptions"
+            placeholder="主体(可多选)"
+            width="180px"
+            @update:model-value="onCompanyFilterChange"
+          />
+          <MultiCheckFilter
+            v-model="searchWarehouseIds"
+            :options="warehouseFilterOptions"
+            placeholder="仓库(可多选)"
+            width="180px"
+          />
+        </div>
+        <div class="stock-toolbar__right">
+          <input
+            type="file"
+            accept=".xlsx,.xls"
+            class="import-input"
+            @change="handleImport"
+            ref="importInputRef"
+          />
+          <ElButton size="small" type="primary" @click="triggerReplaceImport()">本周全量替换</ElButton>
+          <ElButton size="small" @click="openDialog()">手工添加</ElButton>
+          <ElDropdown trigger="click" @command="handleExcelCommand">
+            <ElButton size="small">
+              更多
+              <span class="stock-toolbar__caret">▾</span>
+            </ElButton>
+            <template #dropdown>
+              <ElDropdownMenu>
+                <ElDropdownItem command="import">增量导入</ElDropdownItem>
+                <ElDropdownItem command="export">导出当前列表</ElDropdownItem>
+                <ElDropdownItem command="template">下载模板</ElDropdownItem>
+                <ElDropdownItem command="fields" divided>自定义字段</ElDropdownItem>
+                <ElDropdownItem command="shortage">缺货与预警</ElDropdownItem>
+              </ElDropdownMenu>
+            </template>
+          </ElDropdown>
+        </div>
+      </div>
     </template>
 
     <div class="table-wrap">
@@ -699,10 +717,23 @@ const handleFieldDelete = (key: string) => {
       border
       size="small"
       stripe
-      class="erp-data-table"
+      class="erp-data-table stock-table"
       height="100%"
+      :row-class-name="({ row }: { row: WarehouseStock }) => (getGapQty(row) > 0 ? 'stock-row--alert' : '')"
     >
-      <ElTableColumn type="index" label="序号" width="55" fixed="left" />
+      <ElTableColumn width="44" fixed="left" align="center" class-name="col-gear-cell">
+        <template #header>
+          <ColumnSettings
+            variant="gear"
+            :columns="settingsList"
+            :is-visible="isVisible"
+            @toggle="setVisible"
+            @move="moveColumn"
+            @reset="resetColumns"
+            @show-all="showAll"
+          />
+        </template>
+      </ElTableColumn>
       <ElTableColumn
         v-for="col in visibleColumns"
         :key="col.key"
@@ -936,6 +967,41 @@ const handleFieldDelete = (key: string) => {
 </template>
 
 <style scoped>
+.stock-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  width: 100%;
+  min-width: 0;
+}
+.stock-toolbar__left,
+.stock-toolbar__right {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.stock-toolbar__right {
+  margin-left: auto;
+}
+.stock-toolbar__date {
+  width: 150px;
+}
+.stock-toolbar__caret {
+  margin-left: 4px;
+  font-size: 10px;
+  opacity: 0.7;
+}
+.stock-table :deep(.col-gear-cell .cell) {
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .table-wrap {
   flex: 1;
   min-height: 0;
@@ -953,6 +1019,15 @@ const handleFieldDelete = (key: string) => {
 .stock-warning {
   color: #f56c6c;
   font-weight: 600;
+}
+.stock-table :deep(.stock-row--alert > td.el-table__cell) {
+  background-color: #fff5f5 !important;
+}
+.stock-table :deep(.stock-row--alert:hover > td.el-table__cell) {
+  background-color: #ffecec !important;
+}
+.stock-table :deep(.el-table__body tr.stock-row--alert.el-table__row--striped > td.el-table__cell) {
+  background-color: #fff1f1 !important;
 }
 .balance-ok {
   color: #67c23a;

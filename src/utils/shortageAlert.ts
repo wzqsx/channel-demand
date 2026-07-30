@@ -3,7 +3,6 @@ import { useWarehouseStockStore } from '../stores/warehouseStock';
 import { useWarehouseStore } from '../stores/warehouse';
 import { useProductStore } from '../stores/product';
 import { useChannelStore } from '../stores/channel';
-import { filterWarehouseIdsByCompany } from './companyScope';
 import { getBottleEquivalentStock, getPackProductsForBase } from './packStock';
 
 export type AlertKind = 'shortage' | 'warning';
@@ -22,6 +21,11 @@ export interface ShortageAlertRow {
   packStock: number;
   warningThreshold: number;
   totalDemand: number;
+  /**
+   * 缺口（瓶）：
+   * - 缺货：要货需求 − 可用
+   * - 预警：补到预警线所需 = max(0, 预警线 − 可用)
+   */
   shortage: number;
   channels: string[];
   /** shortage=缺货（需求>可用）；warning=低于预警 */
@@ -30,10 +34,10 @@ export interface ShortageAlertRow {
 }
 
 /**
- * 按主体计算缺货与预警。
- * - 缺货：指定周内 pending/approved 要货合计 > 本主体相关仓库可用库存
+ * 按主体汇总缺货与预警。
+ * - 缺货：指定周内 pending/approved 要货合计 > 单据所选仓库可用库存（含跨主体绑定仓）
  * - 预警：本主体仓库可用库存 ≤ 商品预警阈值（不依赖是否有要货）
- * 库存与需求均严格按主体仓库隔离，不跨主体混算。
+ * 开单时的「高优先占」在提交校验里处理；本页按周合计需求做补货视角，不拆优先级。
  */
 export function buildShortageAndWarnings(opts: {
   weekStart: string;
@@ -77,7 +81,8 @@ export function buildShortageAndWarnings(opts: {
   demands.forEach(req => {
     const companyId = req.companyId;
     if (!companyId) return;
-    const whIds = filterWarehouseIdsByCompany(req.warehouseIds || [], companyId);
+    // 与开单校验一致：单据所选仓（含跨主体绑定仓），仅剔除已删除的仓
+    const whIds = (req.warehouseIds || []).filter(id => !!warehouseStore.getWarehouseById(id));
     if (!whIds.length) return;
     const channelName = channelStore.getChannelById(req.channelId)?.name || req.channelId;
     req.items.forEach(item => {
@@ -124,9 +129,6 @@ export function buildShortageAndWarnings(opts: {
     const availableStock = eq.availableStock;
     const shortage = Math.max(0, agg.quantity - availableStock);
     const warningThreshold = product?.warningThreshold ?? 0;
-    const packHint = eq.packStock + eq.packInTransit > 0
-      ? `（含箱规折算 ${eq.packStock + eq.packInTransit}）`
-      : '';
 
     if (shortage > 0) {
       rows.push({
@@ -144,11 +146,12 @@ export function buildShortageAndWarnings(opts: {
         shortage,
         channels: [...agg.channels],
         kind: 'shortage',
-        statusText: (availableStock === 0 ? '缺货（库存为0）' : '缺货（需求超过可用）') + packHint,
+        statusText: availableStock === 0 ? '库存为0' : '需求超过可用',
       });
     } else if (availableStock <= warningThreshold) {
       const wkey = `${agg.companyId}__${productCode}`;
       seenWarning.add(wkey);
+      const replenish = Math.max(0, warningThreshold - availableStock);
       rows.push({
         companyId: agg.companyId,
         productCode,
@@ -161,10 +164,10 @@ export function buildShortageAndWarnings(opts: {
         packStock: eq.packStock + eq.packInTransit,
         warningThreshold,
         totalDemand: agg.quantity,
-        shortage: 0,
+        shortage: replenish,
         channels: [...agg.channels],
         kind: 'warning',
-        statusText: '低于库存预警' + packHint,
+        statusText: replenish > 0 ? '低于预警，建议补货' : '触及预警线',
       });
     }
   });
@@ -199,10 +202,7 @@ export function buildShortageAndWarnings(opts: {
         );
         if (!hasStockRow && availableStock === 0 && product.warningThreshold === 0) return;
 
-        const packHint = eq.packStock + eq.packInTransit > 0
-          ? `（含箱规折算 ${eq.packStock + eq.packInTransit}）`
-          : '';
-
+        const replenish = Math.max(0, product.warningThreshold - availableStock);
         rows.push({
           companyId,
           productCode: product.code,
@@ -215,10 +215,10 @@ export function buildShortageAndWarnings(opts: {
           packStock: eq.packStock + eq.packInTransit,
           warningThreshold: product.warningThreshold,
           totalDemand: demandAgg.get(wkey)?.quantity || 0,
-          shortage: 0,
+          shortage: replenish,
           channels: demandAgg.get(wkey) ? [...demandAgg.get(wkey)!.channels] : [],
           kind: 'warning',
-          statusText: '低于库存预警' + packHint,
+          statusText: replenish > 0 ? '低于预警，建议补货' : '触及预警线',
         });
       }
     });
