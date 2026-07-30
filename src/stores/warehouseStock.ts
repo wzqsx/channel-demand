@@ -10,12 +10,17 @@ import { useWarehouseStore } from './warehouse';
 import { useStockSnapshotStore } from './stockSnapshot';
 import { weekStartSaturday } from '../utils/week';
 import { yieldToMain } from '../utils/idbKv';
-import { loadStockPersist, saveStockPersist } from '../utils/stockPersist';
+import {
+  loadStockPersist,
+  saveStockPersist,
+  savePreImportBackup,
+  loadPreImportBackup,
+} from '../utils/stockPersist';
 
 const stockKey = (warehouseId: string, productCode: string) =>
   `${warehouseId}__${productCode}`;
 
-/** 超过此行数跳过导入前整表快照（避免再拷贝一份 9 万行） */
+/** 超过此行数跳过 Pinia 多份历史快照；导入前 IDB 安全备份仍会做 */
 export const SKIP_SNAPSHOT_ROWS = 20000;
 const IMPORT_CHUNK = 8000;
 
@@ -26,18 +31,23 @@ export type ImportStocksResult = {
   negativeRows: number;
   total: number;
   snapshotSkipped: boolean;
+  /** 已写入导入前安全备份，可一键回滚 */
+  preImportBackedUp: boolean;
+  backupRowCount: number;
 };
 
 export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   const stocks = ref<WarehouseStock[]>([]);
   const customFields = ref<CustomFieldConfig[]>([]);
   const hydrated = ref(false);
+  /** 导入进行中：禁止自动 persist 半成品 */
+  const importing = ref(false);
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let saving = false;
   let saveQueued = false;
 
   const scheduleSave = () => {
-    if (!hydrated.value) return;
+    if (!hydrated.value || importing.value) return;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       void flushSave();
@@ -217,8 +227,11 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   };
 
   /**
-   * 大批量导入（支持进度回调、分块让出主线程）。
-   * ≥ SKIP_SNAPSHOT_ROWS 时跳过整表快照。
+   * 安全导入：
+   * 1) 有旧数据则先写 IDB「导入前备份」
+   * 2) 仅在内存拼装新表，不碰 stocks
+   * 3) 先把新表写入 IDB 并校验行数
+   * 4) 成功后再替换内存；失败则保持旧内存，并可从备份恢复
    */
   const importStocks = async (
     data: ImportWarehouseStockData[],
@@ -238,137 +251,199 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
       'inTransitStock',
     ];
 
-    const snapshotSkipped =
-      data.length >= SKIP_SNAPSHOT_ROWS || stocks.value.length >= SKIP_SNAPSHOT_ROWS;
+    importing.value = true;
+    let preImportBackedUp = false;
+    let backupRowCount = stocks.value.length;
 
-    if (!snapshotSkipped && stocks.value.length > 0) {
-      onProgress?.(0, data.length, '备份');
-      try {
-        snapshotStore.createSnapshot(
-          stocks.value,
-          description || `${replaceAll ? '全量替换' : '增量导入'}前自动备份 · ${week}`,
-          week,
-        );
+    try {
+      // —— 1. 导入前强制备份（保护现有数据）——
+      if (stocks.value.length > 0) {
+        onProgress?.(0, data.length, '安全备份');
+        try {
+          const meta = await savePreImportBackup(
+            { stocks: stocks.value, customFields: customFields.value },
+            description || `${replaceAll ? '全量替换' : '增量导入'}前 · ${week}`,
+          );
+          preImportBackedUp = true;
+          backupRowCount = meta.rowCount;
+        } catch (e) {
+          throw new Error(
+            e instanceof Error
+              ? e.message
+              : '导入前备份失败，已中止导入，原库存未改动',
+          );
+        }
         await yieldToMain();
-      } catch (e) {
-        console.warn('导入前快照失败，继续导入', e);
       }
-    }
 
-    const { resolveWh } = buildWarehouseMaps();
-    const byKey = new Map<string, WarehouseStock>();
-    if (!replaceAll) {
-      onProgress?.(0, data.length, '准备');
-      for (let i = 0; i < stocks.value.length; i++) {
-        const s = stocks.value[i];
-        byKey.set(stockKey(s.warehouseId, s.productCode), s);
-        if (i > 0 && i % 20000 === 0) await yieldToMain();
-      }
-    }
-
-    let nextCustom = customFields.value.slice();
-    if (data.length > 0) {
-      const firstItem = data[0];
-      for (const key in firstItem) {
-        if (!knownFields.includes(key) && !nextCustom.find(f => f.key === key)) {
-          const value = firstItem[key];
-          let type: 'text' | 'number' | 'date' = 'text';
-          if (typeof value === 'number') type = 'number';
-          else if (typeof value === 'string' && !isNaN(Date.parse(value))) type = 'date';
-          nextCustom.push({ key, label: key, type });
+      const snapshotSkipped =
+        data.length >= SKIP_SNAPSHOT_ROWS || stocks.value.length >= SKIP_SNAPSHOT_ROWS;
+      if (!snapshotSkipped && stocks.value.length > 0) {
+        try {
+          snapshotStore.createSnapshot(
+            stocks.value,
+            description || `${replaceAll ? '全量替换' : '增量导入'}前自动备份 · ${week}`,
+            week,
+          );
+          await yieldToMain();
+        } catch (e) {
+          console.warn('历史快照写入跳过（已有安全备份）', e);
         }
       }
-    }
 
-    let imported = 0;
-    let skippedWarehouse = 0;
-    let skippedNoCode = 0;
-    let negativeRows = 0;
-    let idSeq = Date.now();
-
-    for (let offset = 0; offset < data.length; offset += IMPORT_CHUNK) {
-      const end = Math.min(offset + IMPORT_CHUNK, data.length);
-      for (let i = offset; i < end; i++) {
-        const item = data[i];
-        const whKey = String(item.warehouseCode || item.warehouseName || '').trim();
-        const productCode = String(item.productCode || '').trim();
-        if (!whKey || !productCode) {
-          skippedNoCode += 1;
-          continue;
+      // —— 2. 内存拼装（不改 stocks.value）——
+      const { resolveWh } = buildWarehouseMaps();
+      const byKey = new Map<string, WarehouseStock>();
+      if (!replaceAll) {
+        onProgress?.(0, data.length, '准备');
+        for (let i = 0; i < stocks.value.length; i++) {
+          const s = stocks.value[i];
+          byKey.set(stockKey(s.warehouseId, s.productCode), s);
+          if (i > 0 && i % 20000 === 0) await yieldToMain();
         }
-        const warehouse = resolveWh(item.warehouseCode, item.warehouseName);
-        if (!warehouse) {
-          skippedWarehouse += 1;
-          continue;
-        }
-        const stock = Number(item.stock) || 0;
-        const inTransit = Number(item.inTransitStock) || 0;
-        if (stock < 0 || inTransit < 0) negativeRows += 1;
+      }
 
-        let customFieldsData: Record<string, any> | undefined;
-        for (const key in item) {
-          if (!knownFields.includes(key)) {
-            if (!customFieldsData) customFieldsData = {};
-            customFieldsData[key] = item[key];
+      let nextCustom = customFields.value.slice();
+      if (data.length > 0) {
+        const firstItem = data[0];
+        for (const key in firstItem) {
+          if (!knownFields.includes(key) && !nextCustom.find(f => f.key === key)) {
+            const value = firstItem[key];
+            let type: 'text' | 'number' | 'date' = 'text';
+            if (typeof value === 'number') type = 'number';
+            else if (typeof value === 'string' && !isNaN(Date.parse(value))) type = 'date';
+            nextCustom.push({ key, label: key, type });
           }
         }
-        const key = stockKey(warehouse.id, productCode);
-        const prev = byKey.get(key);
-        if (prev) {
-          if (
-            prev.stock !== stock ||
-            prev.inTransitStock !== inTransit ||
-            customFieldsData
-          ) {
+      }
+
+      let imported = 0;
+      let skippedWarehouse = 0;
+      let skippedNoCode = 0;
+      let negativeRows = 0;
+      let idSeq = Date.now();
+
+      for (let offset = 0; offset < data.length; offset += IMPORT_CHUNK) {
+        const end = Math.min(offset + IMPORT_CHUNK, data.length);
+        for (let i = offset; i < end; i++) {
+          const item = data[i];
+          const whKey = String(item.warehouseCode || item.warehouseName || '').trim();
+          const productCode = String(item.productCode || '').trim();
+          if (!whKey || !productCode) {
+            skippedNoCode += 1;
+            continue;
+          }
+          const warehouse = resolveWh(item.warehouseCode, item.warehouseName);
+          if (!warehouse) {
+            skippedWarehouse += 1;
+            continue;
+          }
+          const stock = Number(item.stock) || 0;
+          const inTransit = Number(item.inTransitStock) || 0;
+          if (stock < 0 || inTransit < 0) negativeRows += 1;
+
+          let customFieldsData: Record<string, any> | undefined;
+          for (const key in item) {
+            if (!knownFields.includes(key)) {
+              if (!customFieldsData) customFieldsData = {};
+              customFieldsData[key] = item[key];
+            }
+          }
+          const key = stockKey(warehouse.id, productCode);
+          const prev = byKey.get(key);
+          if (prev) {
+            if (
+              prev.stock !== stock ||
+              prev.inTransitStock !== inTransit ||
+              customFieldsData
+            ) {
+              byKey.set(key, {
+                ...prev,
+                stock,
+                inTransitStock: inTransit,
+                customFields: customFieldsData || prev.customFields,
+              });
+            }
+          } else {
+            idSeq += 1;
             byKey.set(key, {
-              ...prev,
+              id: `${idSeq}_${imported}`,
+              warehouseId: warehouse.id,
+              productCode,
               stock,
               inTransitStock: inTransit,
-              customFields: customFieldsData || prev.customFields,
+              customFields: customFieldsData,
             });
           }
-        } else {
-          idSeq += 1;
-          byKey.set(key, {
-            id: `${idSeq}_${imported}`,
-            warehouseId: warehouse.id,
-            productCode,
-            stock,
-            inTransitStock: inTransit,
-            customFields: customFieldsData,
-          });
+          imported += 1;
         }
-        imported += 1;
+        onProgress?.(end, data.length, '整理');
+        await yieldToMain();
       }
-      onProgress?.(end, data.length, '写入');
-      await yieldToMain();
-    }
 
-    onProgress?.(data.length, data.length, '提交');
-    stocks.value = Array.from(byKey.values());
-    if (nextCustom.length !== customFields.value.length) {
+      const nextStocks = Array.from(byKey.values());
+      const nextPayload = {
+        stocks: nextStocks,
+        customFields: nextCustom,
+      };
+
+      // —— 3. 先落盘新数据并校验（失败则内存仍是旧数据）——
+      onProgress?.(data.length, data.length, '安全写入');
+      try {
+        await saveStockPersist(nextPayload);
+      } catch (e) {
+        throw new Error(
+          (e instanceof Error ? e.message : '写入失败') +
+            '。原库存未改动' +
+            (preImportBackedUp ? '，可从「恢复导入前备份」找回。' : '。'),
+        );
+      }
+
+      // —— 4. 落盘成功后再换内存 ——
+      onProgress?.(data.length, data.length, '刷新界面');
+      stocks.value = nextStocks;
       customFields.value = nextCustom;
-    }
-    await flushSave();
 
-    return {
-      imported,
-      skippedWarehouse,
-      skippedNoCode,
-      negativeRows,
-      total: data.length,
-      snapshotSkipped,
-    };
+      return {
+        imported,
+        skippedWarehouse,
+        skippedNoCode,
+        negativeRows,
+        total: data.length,
+        snapshotSkipped,
+        preImportBackedUp,
+        backupRowCount,
+      };
+    } finally {
+      importing.value = false;
+    }
   };
 
   const restoreFromSnapshot = (snapshot: StockSnapshot) => {
     stocks.value = JSON.parse(JSON.stringify(snapshot.stocks));
   };
 
+  /** 从导入前安全备份恢复（防数据卡没） */
+  const restoreFromPreImportBackup = async () => {
+    const bak = await loadPreImportBackup();
+    if (!bak) throw new Error('没有可用的导入前备份');
+    const stocksArr = bak.payload.stocks as WarehouseStock[];
+    const fieldsArr = (bak.payload.customFields || []) as CustomFieldConfig[];
+    await saveStockPersist({ stocks: stocksArr, customFields: fieldsArr });
+    stocks.value = stocksArr.map(s => ({
+      ...s,
+      stock: Number(s.stock) || 0,
+      inTransitStock: Number(s.inTransitStock) || 0,
+    }));
+    customFields.value = fieldsArr;
+    return bak.meta;
+  };
+
   return {
     stocks,
     customFields,
     hydrated,
+    importing,
     hydrateFromIdb,
     flushSave,
     initStocks,
@@ -387,5 +462,6 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     removeCustomField,
     importStocks,
     restoreFromSnapshot,
+    restoreFromPreImportBackup,
   };
 });

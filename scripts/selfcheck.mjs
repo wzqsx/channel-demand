@@ -289,7 +289,17 @@ async function main() {
   const ms = Date.now() - t0;
   ok('批量导入 20000 行成功', ir.imported === 20000, `imported=${ir.imported}`);
   ok('批量导入 2 万行 < 8s', ms < 8000, `ms=${ms}`);
-  ok('≥2 万行跳过快照', ir.snapshotSkipped === true);
+  ok('≥2 万行跳过历史快照', ir.snapshotSkipped === true);
+  const afterFirst = stockStore.stocks.length;
+  const ir2 = await stockStore.importStocks(rows.slice(0, 100), true, 'bench2', week);
+  ok('再导入前会做安全备份', ir2.preImportBackedUp === true);
+  ok(
+    '备份行数=导入前库存行数',
+    ir2.backupRowCount === afterFirst,
+    `backup=${ir2.backupRowCount} stocks=${afterFirst}`,
+  );
+  await stockStore.restoreFromPreImportBackup();
+  ok('可从安全备份恢复', stockStore.stocks.length === afterFirst, `len=${stockStore.stocks.length}`);
 
   console.log('\n────────────────────');
   if (fails.length) {

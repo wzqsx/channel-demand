@@ -41,6 +41,7 @@ import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyF
 import { formatCompanyLabel } from '../utils/companyDisplay';
 import { useTableColumnPrefs, type ColumnMeta } from '../composables/useTableColumnPrefs';
 import { getBottleEquivalentStock, resolveToBottleBase } from '../utils/packStock';
+import { hasPreImportBackup } from '../utils/stockPersist';
 
 const router = useRouter();
 const stockStore = useWarehouseStockStore();
@@ -71,14 +72,15 @@ const importWeekStart = ref(weekStartSaturday());
 
 const importInputRef = ref<HTMLInputElement | null>(null);
 const isReplaceMode = ref(false);
+const canRestoreBackup = ref(false);
 
-// 字段管理对话框
-const fieldDialogVisible = ref(false);
-const fieldForm = ref({
-  label: '',
-  type: 'text' as FieldType,
-});
-const editingFieldKey = ref('');
+const refreshBackupFlag = async () => {
+  try {
+    canRestoreBackup.value = await hasPreImportBackup();
+  } catch {
+    canRestoreBackup.value = false;
+  }
+};
 
 const triggerImport = () => {
   isReplaceMode.value = false;
@@ -88,7 +90,7 @@ const triggerImport = () => {
 const triggerReplaceImport = async () => {
   try {
     await ElMessageBox.confirm(
-      `确认用 Excel「全量替换」本周库存？\n\n周次：${weekLabel(importWeekStart.value)}\n\n若行数很大（如数万），将写入 IndexedDB 并跳过整表快照；建议先顶栏「数据备份」导出。\n未出现在 Excel 中的 SKU 库存将丢失。`,
+      `确认用 Excel「全量替换」本周库存？\n\n周次：${weekLabel(importWeekStart.value)}\n\n安全机制：\n· 导入前自动备份当前库存到本机\n· 新数据先写入成功后再替换界面\n· 失败不会清掉旧数据，可用「恢复导入前备份」\n\n未出现在 Excel 中的 SKU 将被新表覆盖掉。`,
       '每周库存导入',
       {
         confirmButtonText: '确认全量替换',
@@ -102,6 +104,41 @@ const triggerReplaceImport = async () => {
     /* cancel */
   }
 };
+
+const restorePreImportBackup = async () => {
+  try {
+    await ElMessageBox.confirm(
+      '将用「最近一次导入前」的备份覆盖当前库存。是否继续？',
+      '恢复导入前备份',
+      { type: 'warning', confirmButtonText: '确认恢复', cancelButtonText: '取消' },
+    );
+  } catch {
+    return;
+  }
+  const loading = ElLoading.service({ lock: true, text: '正在恢复备份…' });
+  try {
+    const meta = await stockStore.restoreFromPreImportBackup();
+    page.value = 1;
+    await refreshBackupFlag();
+    ElMessage.success(
+      meta
+        ? `已恢复备份（${meta.rowCount.toLocaleString()} 行，${meta.at.slice(0, 19).replace('T', ' ')}）`
+        : '已恢复导入前备份',
+    );
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '恢复失败');
+  } finally {
+    loading.close();
+  }
+};
+
+// 字段管理对话框
+const fieldDialogVisible = ref(false);
+const fieldForm = ref({
+  label: '',
+  type: 'text' as FieldType,
+});
+const editingFieldKey = ref('');
 
 const filteredWarehouses = computed(() => {
   if (!searchCompanyIds.value.length) return warehouses.value;
@@ -140,6 +177,7 @@ const warehouseFilterOptions = computed(() =>
 
 onMounted(() => {
   bootstrapStores();
+  void refreshBackupFlag();
 });
 
 const openDialog = (stock?: WarehouseStock) => {
@@ -313,7 +351,11 @@ const handleImport = async (event: Event) => {
     ].filter(Boolean);
     const negPart = result.negativeRows ? `，其中负库存 ${result.negativeRows} 行` : '';
     const skipPart = skipParts.length ? `，跳过 ${skipParts.join('、')}` : '';
-    const snapPart = result.snapshotSkipped ? '（大数据量已跳过整表快照，建议先导出备份）' : '';
+    const snapPart = result.preImportBackedUp
+      ? `（已留导入前备份 ${result.backupRowCount.toLocaleString()} 行，可随时恢复）`
+      : result.snapshotSkipped
+        ? '（大数据量未写历史快照，已优先安全备份）'
+        : '';
     ElMessage.success(
       (isReplaceMode.value
         ? `全量替换完成（成功 ${result.imported}/${result.total}）`
@@ -324,9 +366,11 @@ const handleImport = async (event: Event) => {
         ` · ${week}`,
     );
     page.value = 1;
+    await refreshBackupFlag();
   } catch (e) {
     console.error(e);
-    ElMessage.error(e instanceof Error ? e.message : '导入失败，请检查 Excel 格式与体积');
+    ElMessage.error(e instanceof Error ? e.message : '导入失败，原库存未改动');
+    await refreshBackupFlag();
   } finally {
     loading.close();
     isReplaceMode.value = false;
@@ -687,6 +731,7 @@ const handleExcelCommand = (cmd: string | number) => {
   else if (cmd === 'template') handleTemplate();
   else if (cmd === 'fields') openFieldDialog();
   else if (cmd === 'shortage') goShortageAlert();
+  else if (cmd === 'restore-backup') void restorePreImportBackup();
 };
 
 // 字段管理相关方法
@@ -734,7 +779,7 @@ const handleFieldDelete = (key: string) => {
   <PageShell
     title="库存导入"
     help-title="库存导入说明"
-    help="1. 本页是「当前库存」快照：商品按编码匹配（瓶/箱编码分开），仓库可用名称或编码。大数据量（如数万行）存 IndexedDB，列表分页展示。&#10;2. 「本周全量替换」会写入前显示进度；≥2 万行自动跳过整表快照，建议先「数据备份」导出。增量导入只覆盖匹配行。&#10;3. 本周需求按仓均分（多仓不重复全额），瓶规可用含箱规折算；停用渠道不计。主体汇总缺口以「缺货与预警」为准。"
+    help="1. 库存大数据单独存 IndexedDB；列表分页，避免卡死。&#10;2. 导入前自动做「安全备份」；新数据写入成功后才替换界面，失败不会清掉旧数据。更多 → 恢复导入前备份。&#10;3. 本周需求按仓均分；主体汇总缺口以「缺货与预警」为准。"
   >
     <template #toolbar>
       <div class="stock-toolbar">
@@ -783,7 +828,14 @@ const handleFieldDelete = (key: string) => {
               <ElDropdownMenu>
                 <ElDropdownItem command="template">下载模板</ElDropdownItem>
                 <ElDropdownItem command="fields">自定义字段</ElDropdownItem>
-                <ElDropdownItem command="shortage" divided>缺货与预警</ElDropdownItem>
+                <ElDropdownItem
+                  v-if="canRestoreBackup"
+                  command="restore-backup"
+                  divided
+                >
+                  恢复导入前备份
+                </ElDropdownItem>
+                <ElDropdownItem command="shortage" :divided="!canRestoreBackup">缺货与预警</ElDropdownItem>
               </ElDropdownMenu>
             </template>
           </ElDropdown>
