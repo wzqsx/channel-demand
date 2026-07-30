@@ -689,6 +689,8 @@ const handleFieldDelete = (key: string) => {
             ref="importInputRef"
           />
           <ElButton size="small" type="primary" @click="triggerReplaceImport()">本周全量替换</ElButton>
+          <ElButton size="small" @click="triggerImport()">增量导入</ElButton>
+          <ElButton size="small" @click="handleExport">导出</ElButton>
           <ElButton size="small" @click="openDialog()">手工添加</ElButton>
           <ElDropdown trigger="click" @command="handleExcelCommand">
             <ElButton size="small">
@@ -697,11 +699,9 @@ const handleFieldDelete = (key: string) => {
             </ElButton>
             <template #dropdown>
               <ElDropdownMenu>
-                <ElDropdownItem command="import">增量导入</ElDropdownItem>
-                <ElDropdownItem command="export">导出当前列表</ElDropdownItem>
                 <ElDropdownItem command="template">下载模板</ElDropdownItem>
-                <ElDropdownItem command="fields" divided>自定义字段</ElDropdownItem>
-                <ElDropdownItem command="shortage">缺货与预警</ElDropdownItem>
+                <ElDropdownItem command="fields">自定义字段</ElDropdownItem>
+                <ElDropdownItem command="shortage" divided>缺货与预警</ElDropdownItem>
               </ElDropdownMenu>
             </template>
           </ElDropdown>
@@ -721,7 +721,7 @@ const handleFieldDelete = (key: string) => {
       height="100%"
       :row-class-name="({ row }: { row: WarehouseStock }) => (getGapQty(row) > 0 ? 'stock-row--alert' : '')"
     >
-      <ElTableColumn width="44" fixed="left" align="center" class-name="col-gear-cell">
+      <ElTableColumn width="52" fixed="left" align="center" class-name="col-gear-cell">
         <template #header>
           <ColumnSettings
             variant="gear"
@@ -732,6 +732,9 @@ const handleFieldDelete = (key: string) => {
             @reset="resetColumns"
             @show-all="showAll"
           />
+        </template>
+        <template #default="{ $index }">
+          <span class="row-index">{{ $index + 1 }}</span>
         </template>
       </ElTableColumn>
       <ElTableColumn
@@ -973,8 +976,8 @@ const handleFieldDelete = (key: string) => {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 8px 12px;
-  width: 100%;
   min-width: 0;
+  width: auto;
 }
 .stock-toolbar__left,
 .stock-toolbar__right {
@@ -1000,6 +1003,11 @@ const handleFieldDelete = (key: string) => {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+.row-index {
+  color: var(--erp-text-muted, #909399);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
 }
 
 .table-wrap {

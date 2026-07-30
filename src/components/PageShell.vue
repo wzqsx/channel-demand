@@ -87,6 +87,16 @@ withDefaults(
   gap: 8px;
 }
 
+.page-shell__toolbar > :deep(.app-help-tip) {
+  flex-shrink: 0;
+}
+
+/* 工具栏主体与问号同一行，占满剩余宽度 */
+.page-shell__toolbar > :not(.app-help-tip) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .page-shell__filters {
   margin-top: 8px;
   display: flex;
