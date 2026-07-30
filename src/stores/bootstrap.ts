@@ -30,6 +30,7 @@ export function bootstrapStores() {
   } else {
     company.ensureUniqueIds();
     warehouse.ensureUniqueIds();
+    product.initProducts(); // 纠正组合品每箱瓶数=换算比例
     if (channel.channels.length > 0) {
       channel.initChannels();
     }

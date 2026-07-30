@@ -138,8 +138,8 @@ export const useRequisitionStore = defineStore('requisition', () => {
       .reduce((sum, item) => sum + item.quantity, 0);
 
   /**
-   * 同主体更高优先级渠道的待审批占用（仓库有交集才算竞争同一库存池）
-   * 不含当前渠道自身已提报量。
+   * 同主体更高优先级渠道的占用（待审批+已通过；仓库有交集才算竞争同一库存池）
+   * 不含当前渠道自身已提报量。停用渠道不参与。
    */
   const getHigherPriorityPendingDemand = (
     productCode: string,
@@ -152,7 +152,7 @@ export const useRequisitionStore = defineStore('requisition', () => {
     return requisitions.value
       .filter(
         r =>
-          r.status === 'pending' &&
+          (r.status === 'pending' || r.status === 'approved') &&
           higherIds.has(r.channelId) &&
           overlaps(r.warehouseIds, warehouseIds),
       )

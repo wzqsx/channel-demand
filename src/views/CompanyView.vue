@@ -121,8 +121,9 @@ const handleImport = async (event: Event) => {
     </template>
     <div class="table-wrap">
       <ElTable :data="companies" border size="small" stripe class="erp-data-table" height="100%">
-        <ElTableColumn prop="code" label="编码" width="140" />
-        <ElTableColumn prop="name" label="名称" min-width="200" />
+        <ElTableColumn type="index" label="序号" width="55" fixed="left" />
+        <ElTableColumn prop="code" label="编码" width="140" sortable />
+        <ElTableColumn prop="name" label="名称" min-width="200" sortable />
         <ElTableColumn label="操作" width="140" fixed="right">
           <template #default="{ row }">
             <ElButton link type="primary" size="small" @click="openDialog(row as Company)">编辑</ElButton>

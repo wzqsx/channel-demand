@@ -198,7 +198,7 @@ const handleExportResults = () => {
 <template>
   <PageShell
     title="提报准确性统计"
-    help="对比提报前后的库存变化，统计提报准确率"
+    help="【注意】本页用「相邻库存快照差额」估算到货，并非销货核对。库存为周快照、审批不扣库存，准确率仅供参考。完整率请看「销货核对 / 渠道要货总览」。"
   >
     <template #toolbar>
       <ElSelect
@@ -286,19 +286,20 @@ const handleExportResults = () => {
       </div>
 
       <ElTable :data="accuracyResults" border size="small">
-        <ElTableColumn prop="productCode" label="商品编码" width="100" />
-        <ElTableColumn prop="productName" label="商品名称" width="150" />
-        <ElTableColumn label="提报数量" width="100">
+        <ElTableColumn type="index" label="序号" width="55" />
+        <ElTableColumn prop="productCode" label="商品编码" width="100" sortable />
+        <ElTableColumn prop="productName" label="商品名称" width="150" sortable />
+        <ElTableColumn prop="reportedQuantity" label="提报数量" width="100" sortable>
           <template #default="{ row }">
             {{ row.reportedQuantity }}
           </template>
         </ElTableColumn>
-        <ElTableColumn label="实际到货" width="100">
+        <ElTableColumn prop="actualStock" label="实际到货" width="100" sortable>
           <template #default="{ row }">
             {{ row.actualStock }}
           </template>
         </ElTableColumn>
-        <ElTableColumn label="准确率" width="100">
+        <ElTableColumn prop="accuracy" label="准确率" width="100" sortable>
           <template #default="{ row }">
             <span :class="{ 'accuracy-high': row.accuracy >= 80, 'accuracy-low': row.accuracy < 80 }">
               {{ row.accuracy }}%

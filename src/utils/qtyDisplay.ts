@@ -31,3 +31,15 @@ export function formatProductQty(qty: number, productCode: string): string {
   if (!product) return String(Math.round(Number(qty) || 0));
   return formatQtyWithUnits(qty, product);
 }
+
+/** 箱数 → 瓶数（按每箱瓶数） */
+export function boxesToBottles(boxes: number, bottlesPerBox: number): number {
+  const per = Math.max(1, Math.floor(Number(bottlesPerBox) || 1));
+  return Math.round((Number(boxes) || 0) * per);
+}
+
+/** 瓶数 → 箱数（可带小数，便于展示） */
+export function bottlesToBoxes(bottles: number, bottlesPerBox: number): number {
+  const per = Math.max(1, Math.floor(Number(bottlesPerBox) || 1));
+  return Math.round(((Number(bottles) || 0) / per) * 1000) / 1000;
+}

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
 import { storeToRefs } from 'pinia';
+import { useRouter } from 'vue-router';
 import {
   ElTable,
   ElTableColumn,
@@ -20,21 +21,29 @@ import {
 import PageShell from '../components/PageShell.vue';
 import HelpTip from '../components/HelpTip.vue';
 import MultiCheckFilter from '../components/MultiCheckFilter.vue';
+import ColumnSettings from '../components/ColumnSettings.vue';
 import { useWarehouseStockStore } from '../stores/warehouseStock';
 import { useWarehouseStore } from '../stores/warehouse';
 import { useProductStore } from '../stores/product';
 import { useCompanyStore } from '../stores/company';
+import { useRequisitionStore } from '../stores/requisition';
+import { useChannelStore } from '../stores/channel';
 import { bootstrapStores } from '../stores/bootstrap';
 import type { WarehouseStock, CustomFieldConfig, FieldType, ImportWarehouseStockData } from '../types';
 import { weekStartSaturday, weekLabel } from '../utils/week';
 import { readExcelFromEvent, exportRows, downloadTemplate, cell, cellNum } from '../utils/excel';
 import { formatProductQty } from '../utils/qtyDisplay';
 import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyFilter';
+import { useTableColumnPrefs, type ColumnMeta } from '../composables/useTableColumnPrefs';
+import { getBottleEquivalentStock, resolveToBottleBase } from '../utils/packStock';
 
+const router = useRouter();
 const stockStore = useWarehouseStockStore();
 const warehouseStore = useWarehouseStore();
 const productStore = useProductStore();
 const companyStore = useCompanyStore();
+const requisitionStore = useRequisitionStore();
+const channelStore = useChannelStore();
 
 const { stocks, customFields } = storeToRefs(stockStore);
 const { warehouses } = storeToRefs(warehouseStore);
@@ -191,24 +200,56 @@ const handleDelete = async (id: string) => {
   ElMessage.success('删除成功');
 };
 
-const STOCK_HEADERS = ['仓库编码', '商品编码', '商品名称', '库存', '在途库存'] as const;
+/** Excel 中「库存 / 在途库存」均为瓶单位；仓库可用「仓库编码」或「仓库名称」 */
+const STOCK_HEADERS = [
+  '仓库名称',
+  '仓库编码',
+  '商品编码',
+  '商品名称',
+  '库存(瓶)',
+  '在途库存(瓶)',
+] as const;
+
+const STOCK_HEADER_ALIASES = {
+  warehouseName: ['仓库名称', '仓库', 'warehouseName'],
+  warehouseCode: ['仓库编码', 'warehouseCode'],
+  stock: ['库存(瓶)', '库存', 'stock'],
+  inTransit: ['在途库存(瓶)', '在途库存', 'inTransitStock'],
+} as const;
 
 const handleImport = async (event: Event) => {
   const jsonData = await readExcelFromEvent(event);
   if (!jsonData.length) return;
 
   const knownLabels = new Set<string>([...STOCK_HEADERS]);
+  const knownAlias = new Set<string>([
+    ...STOCK_HEADERS,
+    '库存',
+    '在途库存',
+    '仓库',
+    'warehouseCode',
+    'warehouseName',
+    'productCode',
+    'productName',
+    'stock',
+    'inTransitStock',
+  ]);
+
   const importData: ImportWarehouseStockData[] = jsonData.map(item => {
+    const warehouseName = cell(item, ...STOCK_HEADER_ALIASES.warehouseName);
+    const warehouseCode =
+      cell(item, ...STOCK_HEADER_ALIASES.warehouseCode) || warehouseName;
     const result: ImportWarehouseStockData = {
-      warehouseCode: cell(item, '仓库编码', 'warehouseCode'),
+      warehouseCode,
+      warehouseName,
       productCode: cell(item, '商品编码', 'productCode'),
       productName: cell(item, '商品名称', 'productName'),
-      stock: cellNum(item, '库存', 'stock'),
-      inTransitStock: cellNum(item, '在途库存', 'inTransitStock'),
+      stock: cellNum(item, ...STOCK_HEADER_ALIASES.stock),
+      inTransitStock: cellNum(item, ...STOCK_HEADER_ALIASES.inTransit),
     };
 
     for (const key in item) {
-      if (!knownLabels.has(key) && !['warehouseCode', 'productCode', 'productName', 'stock', 'inTransitStock'].includes(key)) {
+      if (!knownLabels.has(key) && !knownAlias.has(key)) {
         result[key] = item[key];
       }
     }
@@ -223,8 +264,8 @@ const handleImport = async (event: Event) => {
 
   const result = stockStore.importStocks(importData, isReplaceMode.value, description, week);
   const skipParts = [
-    result.skippedWarehouse ? `仓库编码不匹配 ${result.skippedWarehouse}` : '',
-    result.skippedNoCode ? `缺编码 ${result.skippedNoCode}` : '',
+    result.skippedWarehouse ? `仓库名/编码不匹配 ${result.skippedWarehouse}` : '',
+    result.skippedNoCode ? `缺仓库或商品编码 ${result.skippedNoCode}` : '',
   ].filter(Boolean);
   const negPart = result.negativeRows ? `，其中负库存 ${result.negativeRows} 行` : '';
   const skipPart = skipParts.length ? `，跳过 ${skipParts.join('、')}` : '';
@@ -258,10 +299,21 @@ const getProductSpec = (code: string) => {
   return product ? product.spec : '';
 };
 
-const getStockStatus = (productCode: string, stock: number, inTransitStock: number) => {
+const getStockStatus = (
+  productCode: string,
+  stock: number,
+  inTransitStock: number,
+  demandQty = 0,
+  availableOverride?: number,
+) => {
   const product = productStore.getProductByCode(productCode);
   if (!product) return { type: 'info' as const, text: '未知' };
-  const availableStock = stock + inTransitStock;
+  const availableStock =
+    availableOverride != null ? availableOverride : stock + inTransitStock;
+  const gap = Math.max(0, demandQty - availableStock);
+  if (gap > 0) {
+    return { type: 'danger' as const, text: `缺货缺口 ${gap}` };
+  }
   if (availableStock < 0 || stock < 0) {
     return { type: 'danger' as const, text: '负库存' };
   }
@@ -271,7 +323,77 @@ const getStockStatus = (productCode: string, stock: number, inTransitStock: numb
   if (stock <= product.warningThreshold) {
     return { type: 'warning' as const, text: '当前库存预警' };
   }
+  if (demandQty > 0) {
+    return { type: 'success' as const, text: '可满足需求' };
+  }
   return { type: 'success' as const, text: '库存充足' };
+};
+
+/** 本周需求：按仓均分（多仓要货不重复全额计入每仓）；停用渠道不计；箱规折瓶规 */
+const demandMap = computed(() => {
+  const week = weekStartSaturday(importWeekStart.value);
+  const map = new Map<string, number>();
+  requisitionStore.requisitions.forEach(r => {
+    if (r.weekStart !== week) return;
+    if (r.status !== 'pending' && r.status !== 'approved') return;
+    const ch = channelStore.getChannelById(r.channelId);
+    if (ch && ch.enabled === false) return;
+    const whIds = (r.warehouseIds || []).filter(Boolean);
+    if (!whIds.length) return;
+    const share = 1 / whIds.length;
+    r.items.forEach(item => {
+      const { baseCode, factor } = resolveToBottleBase(item.productCode);
+      const qty = item.quantity * factor * share;
+      whIds.forEach(wid => {
+        const key = `${wid}__${baseCode}`;
+        map.set(key, (map.get(key) || 0) + qty);
+      });
+    });
+  });
+  return map;
+});
+
+const getDemandQty = (row: WarehouseStock) => {
+  const { baseCode, factor } = resolveToBottleBase(row.productCode);
+  // 箱规行：展示折成瓶后的本仓份额；若行本身是瓶规则直接取
+  const bottleDemand = demandMap.value.get(`${row.warehouseId}__${baseCode}`) || 0;
+  if (factor > 1 && row.productCode !== baseCode) {
+    // 箱规 SKU 行：用瓶需求 ÷ 比例，便于对照箱规库存单位
+    return Math.round((bottleDemand / factor) * 1000) / 1000;
+  }
+  return Math.round(bottleDemand * 1000) / 1000;
+};
+
+const getAvailableForGap = (row: WarehouseStock) => {
+  const { baseCode } = resolveToBottleBase(row.productCode);
+  // 瓶规：本仓可用含箱规折算；箱规行：仅看本行库存（单位为箱规）
+  if (row.productCode === baseCode) {
+    return getBottleEquivalentStock(baseCode, [row.warehouseId]).availableStock;
+  }
+  return row.stock + row.inTransitStock;
+};
+
+const getGapQty = (row: WarehouseStock) => {
+  const demand = getDemandQty(row);
+  const available = getAvailableForGap(row);
+  return Math.max(0, Math.round((demand - available) * 1000) / 1000);
+};
+
+const getBalanceQty = (row: WarehouseStock) => {
+  const demand = getDemandQty(row);
+  return Math.round((getAvailableForGap(row) - demand) * 1000) / 1000;
+};
+
+const goShortageAlert = () => {
+  router.push({
+    path: '/shortage-alert',
+    query: {
+      week: weekStartSaturday(importWeekStart.value),
+      ...(searchCompanyIds.value.length
+        ? { companyIds: searchCompanyIds.value.join(',') }
+        : {}),
+    },
+  });
 };
 
 const getTotalStock = (productCode: string) => {
@@ -286,14 +408,173 @@ const getCustomFieldValue = (stock: WarehouseStock, fieldKey: string) => {
   return stock.customFields?.[fieldKey] || '';
 };
 
+const stockStatusOf = (row: WarehouseStock) =>
+  getStockStatus(
+    row.productCode,
+    row.stock,
+    row.inTransitStock,
+    getDemandQty(row),
+    getAvailableForGap(row),
+  );
+
+const isCustomCol = (key: string) => key.startsWith('custom:');
+const customFieldKeyOf = (colKey: string) => colKey.slice('custom:'.length);
+
+const bottlesOf = (row: WarehouseStock) => Number(row.stock) || 0;
+const inTransitOf = (row: WarehouseStock) => Number(row.inTransitStock) || 0;
+/** 可用库存（瓶）= 当前 + 在途；与展示列一致 */
+const availableOf = (row: WarehouseStock) => bottlesOf(row) + inTransitOf(row);
+
+/**
+ * 每列独立取值（不依赖 ElTable sortMethod / prop）。
+ * Element Plus 动态列会串比较函数，这里完全自管。
+ */
+const sortValueOf = (row: WarehouseStock, key: string): string | number => {
+  switch (key) {
+    case 'warehouse':
+      return getWarehouseName(row.warehouseId);
+    case 'productCode':
+      return row.productCode || '';
+    case 'productName':
+      return getProductName(row.productCode);
+    case 'spec':
+      return getProductSpec(row.productCode);
+    case 'stockDisp':
+    case 'stockBottle':
+      return bottlesOf(row);
+    case 'inTransitDisp':
+    case 'inTransitBottle':
+      return inTransitOf(row);
+    case 'availableDisp':
+    case 'availableBottle':
+      return availableOf(row);
+    case 'demandDisp':
+    case 'demandBottle':
+      return getDemandQty(row);
+    case 'gapDisp':
+    case 'gapBottle':
+      return getGapQty(row);
+    case 'balanceDisp':
+      return getBalanceQty(row);
+    case 'status':
+      return stockStatusOf(row).text;
+    case 'totalStockDisp':
+    case 'totalStockBottle':
+      return getTotalStock(row.productCode);
+    case 'totalInTransitDisp':
+    case 'totalInTransitBottle':
+      return getTotalInTransitStock(row.productCode);
+    default:
+      if (isCustomCol(key)) {
+        return String(getCustomFieldValue(row, customFieldKeyOf(key)) ?? '');
+      }
+      return '';
+  }
+};
+
+const compareSortValues = (a: string | number, b: string | number) => {
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  return String(a).localeCompare(String(b), 'zh-CN', { numeric: true });
+};
+
+const columnCatalog = computed<ColumnMeta[]>(() => {
+  const base: ColumnMeta[] = [
+    { key: 'warehouse', label: '仓库', minWidth: 140, tooltip: true, sortable: true },
+    { key: 'productCode', label: '商品编码', width: 110, sortable: true },
+    { key: 'productName', label: '商品名称', width: 150, tooltip: true, sortable: true },
+    { key: 'spec', label: '规格', width: 100, tooltip: true, sortable: true },
+    { key: 'stockDisp', label: '当前库存', width: 130, sortable: true },
+    { key: 'stockBottle', label: '当前库存(瓶)', width: 120, align: 'right', sortable: true },
+    { key: 'inTransitDisp', label: '在途库存', width: 120, sortable: true },
+    { key: 'inTransitBottle', label: '在途库存(瓶)', width: 120, align: 'right', sortable: true },
+    { key: 'availableDisp', label: '可用库存', width: 120, sortable: true },
+    { key: 'availableBottle', label: '可用库存(瓶)', width: 120, align: 'right', sortable: true },
+    { key: 'demandDisp', label: '本周需求', width: 120, sortable: true },
+    { key: 'demandBottle', label: '本周需求(瓶)', width: 120, align: 'right', sortable: true },
+    { key: 'gapDisp', label: '缺口', width: 120, sortable: true },
+    { key: 'gapBottle', label: '缺口(瓶)', width: 100, align: 'right', sortable: true },
+    { key: 'balanceDisp', label: '可用-需求', width: 120, sortable: true },
+    { key: 'status', label: '库存状态', width: 140, sortable: true },
+  ];
+  const customs: ColumnMeta[] = customFields.value.map(f => ({
+    key: `custom:${f.key}`,
+    label: f.label,
+    width: 120,
+    sortable: true,
+  }));
+  const totals: ColumnMeta[] = [
+    { key: 'totalStockDisp', label: '总库存', width: 120, sortable: true },
+    { key: 'totalStockBottle', label: '总库存(瓶)', width: 110, align: 'right', sortable: true },
+    { key: 'totalInTransitDisp', label: '总在途', width: 120, sortable: true },
+    { key: 'totalInTransitBottle', label: '总在途(瓶)', width: 110, align: 'right', sortable: true },
+    { key: 'actions', label: '操作', width: 120, fixed: 'right', required: true },
+  ];
+  return [...base, ...customs, ...totals];
+});
+
+const {
+  settingsList,
+  visibleColumns,
+  isVisible,
+  setVisible,
+  moveColumn,
+  resetColumns,
+  showAll,
+} = useTableColumnPrefs('warehouse-stock-columns-v2', columnCatalog);
+
+/** 完全自管排序：表头点击直接传 col.key，不经过 ElTable sort-change / sortMethod */
+const sortState = ref<{ key: string; order: 'ascending' | 'descending' | null }>({
+  key: '',
+  order: null,
+});
+
+const toggleColumnSort = (key: string) => {
+  if (sortState.value.key !== key) {
+    sortState.value = { key, order: 'ascending' };
+    return;
+  }
+  if (sortState.value.order === 'ascending') {
+    sortState.value = { key, order: 'descending' };
+    return;
+  }
+  sortState.value = { key: '', order: null };
+};
+
+const sortHeaderClass = (key: string) => {
+  if (sortState.value.key !== key || !sortState.value.order) return '';
+  return sortState.value.order;
+};
+
+const displayRows = computed(() => {
+  const rows = [...filteredStocks.value];
+  const { key, order } = sortState.value;
+  if (!key || !order) return rows;
+  const dir = order === 'ascending' ? 1 : -1;
+  rows.sort((a, b) => {
+    const r = compareSortValues(sortValueOf(a, key), sortValueOf(b, key));
+    return r === 0 ? String(a.id).localeCompare(String(b.id)) : r * dir;
+  });
+  return rows;
+});
+
 const buildStockExportRow = (stock: WarehouseStock) => {
   const warehouse = warehouseStore.getWarehouseById(stock.warehouseId);
+  const available = availableOf(stock);
+  const demand = getDemandQty(stock);
+  const gap = getGapQty(stock);
   const row: Record<string, string | number> = {
+    仓库名称: warehouse?.name || '',
     仓库编码: warehouse?.code || '',
     商品编码: stock.productCode,
     商品名称: getProductName(stock.productCode),
-    库存: stock.stock,
-    在途库存: stock.inTransitStock,
+    '库存(瓶)': stock.stock,
+    '在途库存(瓶)': stock.inTransitStock,
+    '可用库存(瓶)': available,
+    '本周需求(瓶)': demand,
+    '缺口(瓶)': gap,
+    '可用减需求(瓶)': available - demand,
+    库存展示: formatProductQty(stock.stock, stock.productCode),
+    在途展示: formatProductQty(stock.inTransitStock, stock.productCode),
   };
   customFields.value.forEach(field => {
     row[field.label] = getCustomFieldValue(stock, field.key);
@@ -356,7 +637,7 @@ const handleFieldDelete = (key: string) => {
 <template>
   <PageShell
     title="库存导入"
-    help="未对接万里牛：每周从线下/ERP 导出库存 Excel，建议「全量替换」并自动快照，再去做渠道要货。\n推荐流程：选周次 → 全量替换导入 → 去「渠道要货」提报 → 周末录实际销货核对\nExcel 列：仓库编码、商品编码、商品名称、库存、在途库存"
+    help="本页是「当前库存状况」快照。商品按编码匹配（瓶/箱编码分开）；仓库可用名称或编码。\n本周需求按仓均分（多仓要货不重复全额），瓶规可用含箱规折算；停用渠道不计入。主体汇总缺口仍以「缺货与预警」为准。"
   >
     <template #toolbar>
       <ElDatePicker
@@ -392,88 +673,176 @@ const handleFieldDelete = (key: string) => {
       <HelpTip
         inline
         title="全量替换说明"
-        content="用 Excel 全量替换本周库存。\n旧数据会先自动快照备份，再清空并写入新数据。\n未出现在 Excel 中的 SKU 库存将丢失。\n建议每周固定全量替换一次。"
+        content="用 Excel 全量替换本周「当前库存状况」。\n仓库列可用「仓库名称」或「仓库编码」匹配（建议仓库编码=名称）。\n数量列「库存(瓶)/在途库存(瓶)」按瓶录入。\n旧数据会先自动快照备份；未出现在 Excel 中的 SKU 将丢失。"
       />
       <ElButton size="small" @click="triggerImport()">增量导入</ElButton>
       <ElButton size="small" @click="handleExport">导出</ElButton>
       <ElButton size="small" @click="handleTemplate">下载模板</ElButton>
+      <ElButton size="small" @click="goShortageAlert">缺货与预警</ElButton>
       <ElButton size="small" @click="openFieldDialog()">字段管理</ElButton>
+      <ColumnSettings
+        :columns="settingsList"
+        :is-visible="isVisible"
+        @toggle="setVisible"
+        @move="moveColumn"
+        @reset="resetColumns"
+        @show-all="showAll"
+      />
       <ElButton size="small" @click="openDialog()">手工添加</ElButton>
     </template>
 
     <div class="table-wrap">
 
-    <ElTable :data="filteredStocks" border size="small" stripe class="erp-data-table" height="100%">
-      <ElTableColumn label="仓库" min-width="140" show-overflow-tooltip>
-        <template #default="scope">
-          {{ getWarehouseName((scope.row as WarehouseStock).warehouseId) }}
-          <span class="wh-code">（{{ getWarehouseCode((scope.row as WarehouseStock).warehouseId) }}）</span>
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="商品编码" width="100">
-        <template #default="scope">
-          {{ (scope.row as WarehouseStock).productCode }}
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="商品名称" width="150">
-        <template #default="scope">
-          {{ getProductName((scope.row as WarehouseStock).productCode) }}
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="规格" width="100">
-        <template #default="scope">
-          {{ getProductSpec((scope.row as WarehouseStock).productCode) }}
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="当前库存" width="140">
-        <template #default="scope">
-          <span :class="{ 'stock-warning': getStockStatus((scope.row as WarehouseStock).productCode, (scope.row as WarehouseStock).stock, (scope.row as WarehouseStock).inTransitStock).type === 'danger' || getStockStatus((scope.row as WarehouseStock).productCode, (scope.row as WarehouseStock).stock, (scope.row as WarehouseStock).inTransitStock).type === 'warning' }">
-            {{ formatProductQty((scope.row as WarehouseStock).stock, (scope.row as WarehouseStock).productCode) }}
-          </span>
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="在途库存" width="140">
-        <template #default="scope">
-          {{ formatProductQty((scope.row as WarehouseStock).inTransitStock, (scope.row as WarehouseStock).productCode) }}
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="可用库存" width="140">
-        <template #default="scope">
-          {{ formatProductQty((scope.row as WarehouseStock).stock + (scope.row as WarehouseStock).inTransitStock, (scope.row as WarehouseStock).productCode) }}
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="库存状态" width="120">
-        <template #default="scope">
-          <ElTag :type="getStockStatus((scope.row as WarehouseStock).productCode, (scope.row as WarehouseStock).stock, (scope.row as WarehouseStock).inTransitStock).type">
-            {{ getStockStatus((scope.row as WarehouseStock).productCode, (scope.row as WarehouseStock).stock, (scope.row as WarehouseStock).inTransitStock).text }}
-          </ElTag>
-        </template>
-      </ElTableColumn>
-      <!-- 动态自定义字段列 -->
+    <ElTable
+      :data="displayRows"
+      row-key="id"
+      border
+      size="small"
+      stripe
+      class="erp-data-table"
+      height="100%"
+    >
+      <ElTableColumn type="index" label="序号" width="55" fixed="left" />
       <ElTableColumn
-        v-for="field in customFields"
-        :key="field.key"
-        :label="field.label"
-        width="120"
+        v-for="col in visibleColumns"
+        :key="col.key"
+        :label="col.label"
+        :width="col.width"
+        :min-width="col.minWidth"
+        :align="col.align"
+        :fixed="col.fixed"
+        :show-overflow-tooltip="col.tooltip"
       >
-        <template #default="scope">
-          {{ getCustomFieldValue(scope.row as WarehouseStock, field.key) }}
+        <template #header>
+          <button
+            v-if="col.sortable"
+            type="button"
+            class="th-sort"
+            :class="sortHeaderClass(col.key)"
+            @click="toggleColumnSort(col.key)"
+          >
+            <span>{{ col.label }}</span>
+            <span class="th-sort-caret" aria-hidden="true">
+              <i class="th-sort-caret__up" />
+              <i class="th-sort-caret__down" />
+            </span>
+          </button>
+          <span v-else>{{ col.label }}</span>
         </template>
-      </ElTableColumn>
-      <ElTableColumn label="总库存" width="120">
-        <template #default="scope">
-          {{ formatProductQty(getTotalStock((scope.row as WarehouseStock).productCode), (scope.row as WarehouseStock).productCode) }}
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="总在途" width="120">
-        <template #default="scope">
-          {{ formatProductQty(getTotalInTransitStock((scope.row as WarehouseStock).productCode), (scope.row as WarehouseStock).productCode) }}
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="操作" width="120" fixed="right">
-        <template #default="scope">
-          <ElButton link type="primary" size="small" @click="openDialog(scope.row as WarehouseStock)">编辑</ElButton>
-          <ElButton link type="danger" size="small" @click="handleDelete((scope.row as WarehouseStock).id)">删除</ElButton>
+        <template #default="{ row }">
+          <template v-if="col.key === 'warehouse'">
+            {{ getWarehouseName((row as WarehouseStock).warehouseId) }}
+            <span class="wh-code">（{{ getWarehouseCode((row as WarehouseStock).warehouseId) }}）</span>
+          </template>
+          <template v-else-if="col.key === 'productCode'">
+            {{ (row as WarehouseStock).productCode }}
+          </template>
+          <template v-else-if="col.key === 'productName'">
+            {{ getProductName((row as WarehouseStock).productCode) }}
+          </template>
+          <template v-else-if="col.key === 'spec'">
+            {{ getProductSpec((row as WarehouseStock).productCode) }}
+          </template>
+          <template v-else-if="col.key === 'stockDisp'">
+            <span
+              :class="{
+                'stock-warning':
+                  stockStatusOf(row as WarehouseStock).type === 'danger' ||
+                  stockStatusOf(row as WarehouseStock).type === 'warning',
+              }"
+            >
+              {{ formatProductQty(bottlesOf(row as WarehouseStock), (row as WarehouseStock).productCode) }}
+            </span>
+          </template>
+          <template v-else-if="col.key === 'stockBottle'">
+            {{ bottlesOf(row as WarehouseStock) }}
+          </template>
+          <template v-else-if="col.key === 'inTransitDisp'">
+            {{ formatProductQty(inTransitOf(row as WarehouseStock), (row as WarehouseStock).productCode) }}
+          </template>
+          <template v-else-if="col.key === 'inTransitBottle'">
+            {{ inTransitOf(row as WarehouseStock) }}
+          </template>
+          <template v-else-if="col.key === 'availableDisp'">
+            {{
+              formatProductQty(
+                availableOf(row as WarehouseStock),
+                (row as WarehouseStock).productCode,
+              )
+            }}
+          </template>
+          <template v-else-if="col.key === 'availableBottle'">
+            {{ availableOf(row as WarehouseStock) }}
+          </template>
+          <template v-else-if="col.key === 'demandDisp'">
+            <span :class="{ 'muted-zero': !getDemandQty(row as WarehouseStock) }">
+              {{
+                getDemandQty(row as WarehouseStock)
+                  ? formatProductQty(getDemandQty(row as WarehouseStock), (row as WarehouseStock).productCode)
+                  : '—'
+              }}
+            </span>
+          </template>
+          <template v-else-if="col.key === 'demandBottle'">
+            {{ getDemandQty(row as WarehouseStock) || '—' }}
+          </template>
+          <template v-else-if="col.key === 'gapDisp'">
+            <span :class="{ 'stock-warning': getGapQty(row as WarehouseStock) > 0 }">
+              {{
+                getGapQty(row as WarehouseStock) > 0
+                  ? formatProductQty(getGapQty(row as WarehouseStock), (row as WarehouseStock).productCode)
+                  : '—'
+              }}
+            </span>
+          </template>
+          <template v-else-if="col.key === 'gapBottle'">
+            <span :class="{ 'stock-warning': getGapQty(row as WarehouseStock) > 0 }">
+              {{ getGapQty(row as WarehouseStock) || '—' }}
+            </span>
+          </template>
+          <template v-else-if="col.key === 'balanceDisp'">
+            <span
+              :class="{
+                'stock-warning': getBalanceQty(row as WarehouseStock) < 0,
+                'balance-ok': getBalanceQty(row as WarehouseStock) >= 0 && getDemandQty(row as WarehouseStock) > 0,
+              }"
+            >
+              {{
+                getDemandQty(row as WarehouseStock)
+                  ? formatProductQty(getBalanceQty(row as WarehouseStock), (row as WarehouseStock).productCode)
+                  : '—'
+              }}
+            </span>
+          </template>
+          <template v-else-if="col.key === 'status'">
+            <ElTag :type="stockStatusOf(row as WarehouseStock).type">
+              {{ stockStatusOf(row as WarehouseStock).text }}
+            </ElTag>
+          </template>
+          <template v-else-if="isCustomCol(col.key)">
+            {{ getCustomFieldValue(row as WarehouseStock, customFieldKeyOf(col.key)) }}
+          </template>
+          <template v-else-if="col.key === 'totalStockDisp'">
+            {{ formatProductQty(getTotalStock((row as WarehouseStock).productCode), (row as WarehouseStock).productCode) }}
+          </template>
+          <template v-else-if="col.key === 'totalStockBottle'">
+            {{ getTotalStock((row as WarehouseStock).productCode) }}
+          </template>
+          <template v-else-if="col.key === 'totalInTransitDisp'">
+            {{
+              formatProductQty(
+                getTotalInTransitStock((row as WarehouseStock).productCode),
+                (row as WarehouseStock).productCode,
+              )
+            }}
+          </template>
+          <template v-else-if="col.key === 'totalInTransitBottle'">
+            {{ getTotalInTransitStock((row as WarehouseStock).productCode) }}
+          </template>
+          <template v-else-if="col.key === 'actions'">
+            <ElButton link type="primary" size="small" @click="openDialog(row as WarehouseStock)">编辑</ElButton>
+            <ElButton link type="danger" size="small" @click="handleDelete((row as WarehouseStock).id)">删除</ElButton>
+          </template>
         </template>
       </ElTableColumn>
     </ElTable>
@@ -501,11 +870,17 @@ const handleFieldDelete = (key: string) => {
             />
           </ElSelect>
         </ElFormItem>
-        <ElFormItem label="库存数量">
+        <ElFormItem label="库存数量(瓶)">
           <ElInputNumber v-model="form.stock" style="width: 100%" />
+          <div v-if="form.productCode" class="form-hint">
+            {{ formatProductQty(form.stock, form.productCode) }}
+          </div>
         </ElFormItem>
-        <ElFormItem label="在途库存">
+        <ElFormItem label="在途库存(瓶)">
           <ElInputNumber v-model="form.inTransitStock" style="width: 100%" />
+          <div v-if="form.productCode" class="form-hint">
+            {{ formatProductQty(form.inTransitStock, form.productCode) }}
+          </div>
         </ElFormItem>
         <ElFormItem v-for="field in customFields" :key="field.key" :label="field.label">
           <ElInput v-if="field.type === 'text'" v-model="form.customFields[field.key]" />
@@ -579,8 +954,63 @@ const handleFieldDelete = (key: string) => {
   color: #f56c6c;
   font-weight: 600;
 }
+.balance-ok {
+  color: #67c23a;
+}
+.muted-zero {
+  color: var(--erp-text-muted);
+}
 .wh-code {
   color: var(--erp-text-muted);
   font-size: 12px;
+}
+.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  line-height: 1.2;
+  text-align: left;
+}
+.th-sort-caret {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  width: 10px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.th-sort-caret__up,
+.th-sort-caret__down {
+  width: 0;
+  height: 0;
+  border: 5px solid transparent;
+}
+.th-sort-caret__up {
+  border-bottom-color: #c0c4cc;
+  border-top-width: 0;
+  margin-bottom: 1px;
+}
+.th-sort-caret__down {
+  border-top-color: #c0c4cc;
+  border-bottom-width: 0;
+}
+.th-sort.ascending .th-sort-caret__up {
+  border-bottom-color: var(--el-color-primary, #409eff);
+}
+.th-sort.descending .th-sort-caret__down {
+  border-top-color: var(--el-color-primary, #409eff);
+}
+
+.form-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--erp-text-muted);
 }
 </style>

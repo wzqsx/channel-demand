@@ -408,14 +408,26 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
 
     <div class="table-wrap">
       <ElTable :data="listRows" border size="small" stripe class="erp-data-table" height="100%">
-        <ElTableColumn prop="id" label="单号" width="140" show-overflow-tooltip />
-        <ElTableColumn label="周次" width="110">
+        <ElTableColumn type="index" label="序号" width="55" fixed="left" />
+        <ElTableColumn prop="id" label="单号" width="140" sortable show-overflow-tooltip />
+        <ElTableColumn prop="weekStart" label="周次" width="110" sortable>
           <template #default="{ row }">{{ row.weekStart }}</template>
         </ElTableColumn>
-        <ElTableColumn label="主体" width="110" show-overflow-tooltip>
+        <ElTableColumn
+          label="主体"
+          width="110"
+          show-overflow-tooltip
+          sortable
+          :sort-method="(a: Requisition, b: Requisition) => getCompanyName(a.companyId).localeCompare(getCompanyName(b.companyId), 'zh-CN')"
+        >
           <template #default="{ row }">{{ getCompanyName(row.companyId) }}</template>
         </ElTableColumn>
-        <ElTableColumn label="渠道" width="100">
+        <ElTableColumn
+          label="渠道"
+          width="100"
+          sortable
+          :sort-method="(a: Requisition, b: Requisition) => getChannelName(a.channelId).localeCompare(getChannelName(b.channelId), 'zh-CN')"
+        >
           <template #default="{ row }">
             {{ getChannelName(row.channelId) }}
             <ElTag size="small" type="info" style="margin-left: 4px">
@@ -426,10 +438,16 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
         <ElTableColumn label="仓库" min-width="140" show-overflow-tooltip>
           <template #default="{ row }">{{ getWarehouseNames(row.warehouseIds) }}</template>
         </ElTableColumn>
-        <ElTableColumn label="SKU数" width="70" align="center">
+        <ElTableColumn
+          label="SKU数"
+          width="70"
+          align="center"
+          sortable
+          :sort-method="(a: Requisition, b: Requisition) => a.items.length - b.items.length"
+        >
           <template #default="{ row }">{{ row.items.length }}</template>
         </ElTableColumn>
-        <ElTableColumn label="状态" width="90">
+        <ElTableColumn prop="status" label="状态" width="90" sortable>
           <template #default="{ row }">
             <ElTag size="small" :type="getStatusTag(row.status).type">
               {{ getStatusTag(row.status).label }}
@@ -442,7 +460,7 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
             <ElTag v-else size="small" type="info">未录</ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="创建时间" width="150">
+        <ElTableColumn prop="createdAt" label="创建时间" width="150" sortable>
           <template #default="{ row }">{{ formatDate(row.createdAt) }}</template>
         </ElTableColumn>
         <ElTableColumn label="操作" width="280" fixed="right">
@@ -549,14 +567,15 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
             <HelpTip
               inline
               title="验库存说明"
-              content="验库存 = 所选仓库(瓶规库存+在途 + 箱规折算) − 同主体更高优先级、且仓库有交集的待审批要货。箱规需在商品里勾选组合并填写基础瓶规编码与换算比例。"
+              content="验库存 = 所选仓库(瓶规库存+在途 + 箱规折算) − 同主体更高优先级、且仓库有交集的「待审批+已通过」要货。停用渠道不参与。箱规需在商品里勾选组合并填写基础瓶规编码与换算比例。"
             />
           </div>
         </div>
         <ElTable v-if="importData.length" :data="importData" border size="small" max-height="220">
-          <ElTableColumn prop="productCode" label="商品编码" width="120" />
-          <ElTableColumn prop="productName" label="商品名称" min-width="160" />
-          <ElTableColumn label="数量" width="120" show-overflow-tooltip>
+          <ElTableColumn type="index" label="序号" width="55" />
+          <ElTableColumn prop="productCode" label="商品编码" width="120" sortable />
+          <ElTableColumn prop="productName" label="商品名称" min-width="160" sortable />
+          <ElTableColumn prop="quantity" label="数量" width="120" sortable show-overflow-tooltip>
             <template #default="{ row }">
               {{ formatProductQty(row.quantity, row.productCode) }}
             </template>
@@ -569,14 +588,15 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
       <div v-if="stockCheckResults.length" class="import-block">
         <div class="import-block__head"><span>库存检查</span></div>
         <ElTable :data="stockCheckResults" border size="small" max-height="200">
-          <ElTableColumn prop="productCode" label="瓶规编码" width="100" />
-          <ElTableColumn prop="productName" label="名称" min-width="120" />
-          <ElTableColumn label="需求" width="110" show-overflow-tooltip>
+          <ElTableColumn type="index" label="序号" width="55" />
+          <ElTableColumn prop="productCode" label="瓶规编码" width="100" sortable />
+          <ElTableColumn prop="productName" label="名称" min-width="120" sortable />
+          <ElTableColumn prop="demandQuantity" label="需求" width="110" sortable show-overflow-tooltip>
             <template #default="{ row }">
               {{ formatProductQty(row.demandQuantity, row.productCode) }}
             </template>
           </ElTableColumn>
-          <ElTableColumn label="可用(含箱规)" width="120" show-overflow-tooltip>
+          <ElTableColumn prop="availableStock" label="可用(含箱规)" width="120" sortable show-overflow-tooltip>
             <template #default="{ row }">
               {{ formatProductQty(row.availableStock, row.productCode) }}
             </template>
@@ -616,9 +636,10 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
           {{ weekLabel(detailRow.weekStart) }} · {{ getWarehouseNames(detailRow.warehouseIds) }}
         </p>
         <ElTable :data="detailRow.items" border size="small" max-height="400">
-          <ElTableColumn prop="productCode" label="编码" width="120" />
-          <ElTableColumn prop="productName" label="名称" min-width="160" />
-          <ElTableColumn label="要货数量" width="120" show-overflow-tooltip>
+          <ElTableColumn type="index" label="序号" width="55" />
+          <ElTableColumn prop="productCode" label="编码" width="120" sortable />
+          <ElTableColumn prop="productName" label="名称" min-width="160" sortable />
+          <ElTableColumn prop="quantity" label="要货数量" width="120" sortable show-overflow-tooltip>
             <template #default="{ row }">
               {{ formatProductQty(row.quantity, row.productCode) }}
             </template>

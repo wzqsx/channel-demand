@@ -296,7 +296,12 @@ const handleImport = async (event: Event) => {
     const codes = warehouseCodesRaw.split(/[,，]/).map(c => c.trim()).filter(Boolean);
     const companyWarehouses = warehouseStore.getWarehousesByCompany(company.id);
     const warehouseIds = codes
-      .map(c => companyWarehouses.find(w => w.code === c)?.id)
+      .map(c => {
+        const byCode = companyWarehouses.find(w => w.code === c);
+        if (byCode) return byCode.id;
+        // 兼容「编码=名称」后 Excel 只写仓库名
+        return companyWarehouses.find(w => w.name === c)?.id;
+      })
       .filter((id): id is string => !!id);
     if (!warehouseIds.length) {
       skipped += 1;
@@ -366,22 +371,28 @@ const listRows = computed(() => {
         placeholder="主体(可多选)"
         width="200px"
       />
-      <ElButton type="primary" size="small" @click="openDialog()">添加渠道</ElButton>
+      <ElButton type="primary" size="small" @click="openDialog()">新增渠道</ElButton>
       <ElButton size="small" @click="importRef?.click()">导入</ElButton>
       <ElButton size="small" @click="handleExport">导出</ElButton>
       <ElButton size="small" @click="handleTemplate">下载模板</ElButton>
     </template>
     <div class="table-wrap">
       <ElTable :data="listRows" border size="small" stripe class="erp-data-table" height="100%">
-        <ElTableColumn prop="code" label="渠道编码" width="110" />
-        <ElTableColumn prop="name" label="渠道名称" width="140" />
-        <ElTableColumn label="主体" width="120">
+        <ElTableColumn type="index" label="序号" width="55" fixed="left" />
+        <ElTableColumn prop="code" label="渠道编码" width="110" sortable />
+        <ElTableColumn prop="name" label="渠道名称" width="140" sortable />
+        <ElTableColumn
+          label="主体"
+          width="120"
+          sortable
+          :sort-method="(a: Channel, b: Channel) => getCompanyName(a.companyId).localeCompare(getCompanyName(b.companyId), 'zh-CN')"
+        >
           <template #default="{ row }">{{ getCompanyName((row as Channel).companyId) }}</template>
         </ElTableColumn>
         <ElTableColumn label="可用仓库" min-width="180">
           <template #default="{ row }">{{ getWarehouseNames((row as Channel).warehouseIds) }}</template>
         </ElTableColumn>
-        <ElTableColumn label="优先级" width="110">
+        <ElTableColumn prop="priority" label="优先级" width="110" sortable>
           <template #default="{ row }">
             <ElTag
               size="small"
@@ -414,7 +425,7 @@ const listRows = computed(() => {
 
     <ElDialog
       v-model="dialogVisible"
-      :title="isEdit ? '编辑渠道' : '添加渠道'"
+      :title="isEdit ? '编辑渠道' : '新增渠道'"
       width="720px"
       append-to-body
       align-center
@@ -428,6 +439,8 @@ const listRows = computed(() => {
             clearable
             maxlength="32"
             show-word-limit
+            autocomplete="off"
+            name="channel_code_field"
             placeholder="唯一编码，如 CH001"
           />
         </ElFormItem>
@@ -437,7 +450,9 @@ const listRows = computed(() => {
             clearable
             maxlength="64"
             show-word-limit
-            placeholder="例如：快乐猴"
+            autocomplete="off"
+            name="channel_name_field"
+            placeholder="例如：天猫旗舰 / 抖音店 / 经销商A"
           />
         </ElFormItem>
         <ElFormItem label="主体仓库">

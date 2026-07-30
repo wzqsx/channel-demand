@@ -148,12 +148,12 @@ const handleExportDetail = () => {
         v-loading="false"
       >
         <ElTableColumn label="序号" type="index" width="60" />
-        <ElTableColumn label="备份时间" width="180">
+        <ElTableColumn label="备份时间" width="180" sortable :sort-method="(a: StockSnapshot, b: StockSnapshot) => a.snapshotTime.localeCompare(b.snapshotTime)">
           <template #default="{ row }">
             {{ formatTime((row as StockSnapshot).snapshotTime) }}
           </template>
         </ElTableColumn>
-        <ElTableColumn v-if="hasWeekStart" label="周起始" width="120">
+        <ElTableColumn v-if="hasWeekStart" label="周起始" width="120" prop="weekStart" sortable>
           <template #default="{ row }">
             {{ (row as StockSnapshot).weekStart || '-' }}
           </template>
@@ -163,12 +163,24 @@ const handleExportDetail = () => {
             {{ (row as StockSnapshot).description }}
           </template>
         </ElTableColumn>
-        <ElTableColumn label="库存记录数" width="110" align="center">
+        <ElTableColumn
+          label="库存记录数"
+          width="110"
+          align="center"
+          sortable
+          :sort-method="(a: StockSnapshot, b: StockSnapshot) => a.stocks.length - b.stocks.length"
+        >
           <template #default="{ row }">
             {{ (row as StockSnapshot).stocks.length }} 条
           </template>
         </ElTableColumn>
-        <ElTableColumn label="总库存数量" width="110" align="center">
+        <ElTableColumn
+          label="总库存数量"
+          width="110"
+          align="center"
+          sortable
+          :sort-method="(a: StockSnapshot, b: StockSnapshot) => getTotalStockCount(a.stocks) - getTotalStockCount(b.stocks)"
+        >
           <template #default="{ row }">
             {{ getTotalStockCount((row as StockSnapshot).stocks) }}
           </template>
@@ -185,17 +197,24 @@ const handleExportDetail = () => {
 
     <ElDialog v-model="showDetailDialog" :title="`库存快照 - ${selectedSnapshot?.description}`" width="900px">
       <ElTable :data="selectedSnapshot?.stocks" border size="small">
-        <ElTableColumn label="仓库" width="100">
+        <ElTableColumn type="index" label="序号" width="55" />
+        <ElTableColumn
+          label="仓库"
+          width="100"
+          sortable
+          :sort-method="(a: WarehouseStock, b: WarehouseStock) => getWarehouseName(a.warehouseId).localeCompare(getWarehouseName(b.warehouseId), 'zh-CN')"
+        >
           <template #default="{ row }">
             {{ getWarehouseName((row as WarehouseStock).warehouseId) }}
           </template>
         </ElTableColumn>
-        <ElTableColumn label="商品编码" width="100">
-          <template #default="{ row }">
-            {{ (row as WarehouseStock).productCode }}
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="商品名称" width="150">
+        <ElTableColumn prop="productCode" label="商品编码" width="100" sortable />
+        <ElTableColumn
+          label="商品名称"
+          width="150"
+          sortable
+          :sort-method="(a: WarehouseStock, b: WarehouseStock) => getProductName(a.productCode).localeCompare(getProductName(b.productCode), 'zh-CN')"
+        >
           <template #default="{ row }">
             {{ getProductName((row as WarehouseStock).productCode) }}
           </template>
@@ -205,17 +224,22 @@ const handleExportDetail = () => {
             {{ getProductSpec((row as WarehouseStock).productCode) }}
           </template>
         </ElTableColumn>
-        <ElTableColumn label="库存数量" width="120">
+        <ElTableColumn prop="stock" label="库存数量" width="120" sortable>
           <template #default="{ row }">
             {{ (row as WarehouseStock).stock }} {{ getProductUnit((row as WarehouseStock).productCode) }}
           </template>
         </ElTableColumn>
-        <ElTableColumn label="在途库存" width="120">
+        <ElTableColumn prop="inTransitStock" label="在途库存" width="120" sortable>
           <template #default="{ row }">
             {{ (row as WarehouseStock).inTransitStock }} {{ getProductUnit((row as WarehouseStock).productCode) }}
           </template>
         </ElTableColumn>
-        <ElTableColumn label="可用库存" width="120">
+        <ElTableColumn
+          label="可用库存"
+          width="120"
+          sortable
+          :sort-method="(a: WarehouseStock, b: WarehouseStock) => (a.stock + a.inTransitStock) - (b.stock + b.inTransitStock)"
+        >
           <template #default="{ row }">
             {{ (row as WarehouseStock).stock + (row as WarehouseStock).inTransitStock }} {{ getProductUnit((row as WarehouseStock).productCode) }}
           </template>

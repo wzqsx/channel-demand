@@ -193,36 +193,37 @@ const handleExport = () => {
         class="erp-data-table"
         height="100%"
       >
+        <ElTableColumn type="index" label="序号" width="55" fixed="left" />
         <ElTableColumn label="周期" width="160">
           <template #default="{ row }">{{ periodLabel(row.period, grain) }}</template>
         </ElTableColumn>
-        <ElTableColumn label="排名" width="70" align="center">
+        <ElTableColumn prop="rankInPeriod" label="排名" width="70" align="center" sortable>
           <template #default="{ row }">
             <ElTag v-if="row.rankInPeriod <= 3" size="small" type="success">#{{ row.rankInPeriod }}</ElTag>
             <span v-else>#{{ row.rankInPeriod }}</span>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="主体" width="110">
+        <ElTableColumn label="主体" width="110" sortable :sort-method="(a: any, b: any) => getCompanyName(a.companyId).localeCompare(getCompanyName(b.companyId), 'zh-CN')">
           <template #default="{ row }">{{ getCompanyName(row.companyId) }}</template>
         </ElTableColumn>
-        <ElTableColumn label="渠道" width="120">
+        <ElTableColumn label="渠道" width="120" sortable :sort-method="(a: any, b: any) => getChannelName(a.channelId).localeCompare(getChannelName(b.channelId), 'zh-CN')">
           <template #default="{ row }">{{ getChannelName(row.channelId) }}</template>
         </ElTableColumn>
-        <ElTableColumn prop="demandTotal" label="要货合计" width="100" />
-        <ElTableColumn prop="salesTotal" label="销货合计" width="100" />
-        <ElTableColumn label="完成率" width="110">
+        <ElTableColumn prop="demandTotal" label="要货合计" width="100" sortable />
+        <ElTableColumn prop="salesTotal" label="销货合计" width="100" sortable />
+        <ElTableColumn prop="completionRate" label="完成率" width="110" sortable>
           <template #default="{ row }">
             <ElTag size="small" :type="rateType(row.completionRate)">
               {{ row.completionRate }}%
             </ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="超额" width="90">
+        <ElTableColumn prop="excessQty" label="超额" width="90" sortable>
           <template #default="{ row }">
             <span :class="{ ok: row.excessQty > 0 }">{{ row.excessQty }}</span>
           </template>
         </ElTableColumn>
-        <ElTableColumn prop="shortfallQty" label="缺口" width="90" />
+        <ElTableColumn prop="shortfallQty" label="缺口" width="90" sortable />
         <ElTableColumn label="状态" width="100">
           <template #default="{ row }">
             <ElTag v-if="row.isExcess" size="small" type="success">超额完成</ElTag>
@@ -230,7 +231,7 @@ const handleExport = () => {
             <ElTag v-else size="small" type="warning">偏低</ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn prop="requisitionCount" label="单数" width="70" />
+        <ElTableColumn prop="requisitionCount" label="单数" width="70" sortable />
       </ElTable>
     </div>
   </PageShell>

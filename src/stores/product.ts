@@ -5,17 +5,23 @@ import type { Product } from '../types';
 export const useProductStore = defineStore('product', () => {
   const products = ref<Product[]>([]);
 
-  // 模拟初始数据
+  // 如果已有数据，不再初始化种子；但纠正组合品「每箱瓶数≠换算比例」
   const initProducts = () => {
-    // 如果已有数据，不再初始化
-    if (products.value.length > 0) return;
+    if (products.value.length > 0) {
+      products.value.forEach((p, i) => {
+        if (p.isCombined && p.combineRatio > 0 && p.bottlesPerBox !== p.combineRatio) {
+          products.value[i] = { ...p, bottlesPerBox: p.combineRatio };
+        }
+      });
+      return;
+    }
     products.value = [
       { id: '1', code: 'P001', name: '矿泉水500ml', spec: '500ml', bottleUnit: '瓶', boxUnit: '箱', bottlesPerBox: 24, stock: 500, warningThreshold: 100, isCombined: false, combineProductCode: '', combineRatio: 0 },
       { id: '2', code: 'P002', name: '可乐330ml', spec: '330ml', bottleUnit: '瓶', boxUnit: '箱', bottlesPerBox: 24, stock: 50, warningThreshold: 100, isCombined: false, combineProductCode: '', combineRatio: 0 },
       { id: '3', code: 'P003', name: '果汁1L', spec: '1L', bottleUnit: '瓶', boxUnit: '箱', bottlesPerBox: 12, stock: 200, warningThreshold: 50, isCombined: false, combineProductCode: '', combineRatio: 0 },
       { id: '4', code: 'P004', name: '啤酒500ml', spec: '500ml', bottleUnit: '瓶', boxUnit: '箱', bottlesPerBox: 12, stock: 10, warningThreshold: 50, isCombined: false, combineProductCode: '', combineRatio: 0 },
       { id: '5', code: 'P005', name: '牛奶250ml', spec: '250ml', bottleUnit: '盒', boxUnit: '箱', bottlesPerBox: 24, stock: 300, warningThreshold: 80, isCombined: false, combineProductCode: '', combineRatio: 0 },
-      { id: '6', code: 'P0012', name: '矿泉水一打', spec: '500ml*12', bottleUnit: '打', boxUnit: '箱', bottlesPerBox: 2, stock: 0, warningThreshold: 10, isCombined: true, combineProductCode: 'P001', combineRatio: 12 },
+      { id: '6', code: 'P0012', name: '矿泉水一打', spec: '500ml*12', bottleUnit: '打', boxUnit: '箱', bottlesPerBox: 12, stock: 0, warningThreshold: 10, isCombined: true, combineProductCode: 'P001', combineRatio: 12 },
     ];
   };
 
@@ -52,22 +58,30 @@ export const useProductStore = defineStore('product', () => {
     };
   };
 
+  const updateProduct = (id: string, product: Partial<Product>) => {
+    const index = products.value.findIndex(p => p.id === id);
+    if (index === -1) return;
+    const next = { ...products.value[index], ...product };
+    if (next.isCombined && next.combineRatio > 0) {
+      next.bottlesPerBox = next.combineRatio;
+    }
+    products.value[index] = next;
+  };
+
   const addProduct = (product: Omit<Product, 'id'>) => {
+    const bottlesPerBox =
+      product.isCombined && product.combineRatio > 0
+        ? product.combineRatio
+        : product.bottlesPerBox;
     const newProduct: Product = {
       ...product,
+      bottlesPerBox,
       id: Date.now().toString(),
       isCombined: product.isCombined || false,
       combineProductCode: product.combineProductCode || '',
       combineRatio: product.combineRatio || 0,
     };
     products.value.push(newProduct);
-  };
-
-  const updateProduct = (id: string, product: Partial<Product>) => {
-    const index = products.value.findIndex(p => p.id === id);
-    if (index !== -1) {
-      products.value[index] = { ...products.value[index], ...product };
-    }
   };
 
   const deleteProduct = (id: string) => {
@@ -91,6 +105,18 @@ export const useProductStore = defineStore('product', () => {
     return products.value[products.value.length - 1]?.id;
   };
 
+  /** 批量更新；patch 为每条商品生成的字段 */
+  const batchUpdate = (ids: string[], patchFn: (product: Product) => Partial<Product>) => {
+    let n = 0;
+    const idSet = new Set(ids);
+    products.value.forEach((p, i) => {
+      if (!idSet.has(p.id)) return;
+      products.value[i] = { ...p, ...patchFn(p) };
+      n += 1;
+    });
+    return n;
+  };
+
   return {
     products,
     warningProducts,
@@ -104,6 +130,7 @@ export const useProductStore = defineStore('product', () => {
     deleteProduct,
     getProductByCode,
     upsertByCode,
+    batchUpdate,
   };
 }, {
   persist: true,

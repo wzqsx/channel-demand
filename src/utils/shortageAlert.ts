@@ -60,6 +60,8 @@ export function buildShortageAndWarnings(opts: {
     if (r.weekStart !== opts.weekStart) return false;
     if (!statuses.includes(r.status as 'pending' | 'approved')) return false;
     if (companyFilter && !companyFilter.has(r.companyId)) return false;
+    const ch = channelStore.getChannelById(r.channelId);
+    if (ch && ch.enabled === false) return false;
     return true;
   });
 
@@ -79,16 +81,26 @@ export function buildShortageAndWarnings(opts: {
     if (!whIds.length) return;
     const channelName = channelStore.getChannelById(req.channelId)?.name || req.channelId;
     req.items.forEach(item => {
-      const key = `${companyId}__${item.productCode}`;
+      const raw = productStore.getProductByCode(item.productCode);
+      // 箱规编码要货折成瓶规需求
+      let productCode = item.productCode;
+      let quantity = item.quantity;
+      if (raw?.isCombined && raw.combineProductCode && raw.combineRatio > 0) {
+        productCode = raw.combineProductCode;
+        quantity = item.quantity * raw.combineRatio;
+      } else if (raw?.isCombined) {
+        return;
+      }
+      const key = `${companyId}__${productCode}`;
       const prev = demandAgg.get(key);
       if (prev) {
-        prev.quantity += item.quantity;
+        prev.quantity += quantity;
         prev.channels.add(channelName);
         whIds.forEach(id => prev.warehouseIds.add(id));
       } else {
         demandAgg.set(key, {
           companyId,
-          quantity: item.quantity,
+          quantity,
           channels: new Set([channelName]),
           warehouseIds: new Set(whIds),
         });
@@ -103,7 +115,6 @@ export function buildShortageAndWarnings(opts: {
   demandAgg.forEach((agg, key) => {
     const productCode = key.split('__')[1];
     const product = productStore.getProductByCode(productCode);
-    // 箱规编码的要货应已在导入时折成瓶规；若仍落到箱规，跳过（由瓶规行体现）
     if (product?.isCombined) return;
 
     const whIds = [...agg.warehouseIds];

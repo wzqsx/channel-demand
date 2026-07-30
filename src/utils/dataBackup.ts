@@ -70,6 +70,11 @@ export function importAppDataBackup(payload: unknown): { ok: true; keys: string[
 
 /** 是否已有持久化数据（防止初始化种子覆盖用户数据） */
 export function hasAnyPersistedBusinessData(): boolean {
+  try {
+    if (typeof localStorage === 'undefined') return false;
+  } catch {
+    return false;
+  }
   return DATA_STORE_KEYS.some(key => {
     const raw = localStorage.getItem(key);
     if (!raw || raw === 'null' || raw === '{}' || raw === '[]') return false;

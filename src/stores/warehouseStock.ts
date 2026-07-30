@@ -15,6 +15,12 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   const customFields = ref<CustomFieldConfig[]>([]);
 
   const initStocks = () => {
+    // 兼容旧本地数据：库存字段可能被存成字符串，导致「可用=库存+在途」变成拼接
+    stocks.value = stocks.value.map(s => ({
+      ...s,
+      stock: Number(s.stock) || 0,
+      inTransitStock: Number(s.inTransitStock) || 0,
+    }));
     if (stocks.value.length > 0) return;
     stocks.value = [
       { id: '1', warehouseId: 'W001', productCode: 'P001', stock: 200, inTransitStock: 50 },
@@ -140,7 +146,14 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
 
     if (replaceAll) stocks.value = [];
 
-    const knownFields = ['warehouseCode', 'productCode', 'productName', 'stock', 'inTransitStock'];
+    const knownFields = [
+      'warehouseCode',
+      'warehouseName',
+      'productCode',
+      'productName',
+      'stock',
+      'inTransitStock',
+    ];
     if (data.length > 0) {
       const firstItem = data[0];
       for (const key in firstItem) {
@@ -159,11 +172,12 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     let skippedNoCode = 0;
     let negativeRows = 0;
     data.forEach(item => {
-      if (!item.warehouseCode || !item.productCode) {
+      const whKey = String(item.warehouseCode || item.warehouseName || '').trim();
+      if (!whKey || !item.productCode) {
         skippedNoCode += 1;
         return;
       }
-      const warehouse = warehouseStore.warehouses.find(w => w.code === item.warehouseCode);
+      const warehouse = warehouseStore.resolveWarehouse(item.warehouseCode, item.warehouseName);
       if (!warehouse) {
         skippedWarehouse += 1;
         return;

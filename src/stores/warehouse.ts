@@ -6,20 +6,24 @@ function newWarehouseId() {
   return `W_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
+function norm(s: string) {
+  return String(s || '').trim();
+}
+
 export const useWarehouseStore = defineStore('warehouse', () => {
   const warehouses = ref<Warehouse[]>([]);
 
   const initWarehouses = () => {
     if (warehouses.value.length > 0) return;
     warehouses.value = [
-      { id: 'W001', name: 'A仓', code: 'A', companyId: 'COMP001' },
-      { id: 'W002', name: 'B仓', code: 'B', companyId: 'COMP001' },
-      { id: 'W003', name: 'C仓', code: 'C', companyId: 'COMP001' },
-      { id: 'W004', name: 'D仓', code: 'D', companyId: 'COMP001' },
-      { id: 'W005', name: 'E仓', code: 'E', companyId: 'COMP002' },
-      { id: 'W006', name: 'F仓', code: 'F', companyId: 'COMP003' },
-      { id: 'W007', name: 'G仓', code: 'G', companyId: 'COMP003' },
-      { id: 'W008', name: 'H仓', code: 'H', companyId: 'COMP004' },
+      { id: 'W001', name: 'A仓', code: 'A仓', companyId: 'COMP001' },
+      { id: 'W002', name: 'B仓', code: 'B仓', companyId: 'COMP001' },
+      { id: 'W003', name: 'C仓', code: 'C仓', companyId: 'COMP001' },
+      { id: 'W004', name: 'D仓', code: 'D仓', companyId: 'COMP001' },
+      { id: 'W005', name: 'E仓', code: 'E仓', companyId: 'COMP002' },
+      { id: 'W006', name: 'F仓', code: 'F仓', companyId: 'COMP003' },
+      { id: 'W007', name: 'G仓', code: 'G仓', companyId: 'COMP003' },
+      { id: 'W008', name: 'H仓', code: 'H仓', companyId: 'COMP004' },
     ];
   };
 
@@ -62,7 +66,38 @@ export const useWarehouseStore = defineStore('warehouse', () => {
 
   const getWarehouseById = (id: string) => warehouses.value.find(w => w.id === id);
 
-  const getWarehouseByCode = (code: string) => warehouses.value.find(w => w.code === code);
+  const getWarehouseByCode = (code: string) => {
+    const c = norm(code);
+    if (!c) return undefined;
+    return warehouses.value.find(w => norm(w.code) === c);
+  };
+
+  const getWarehouseByName = (name: string, companyId?: string) => {
+    const n = norm(name);
+    if (!n) return undefined;
+    return warehouses.value.find(
+      w => norm(w.name) === n && (!companyId || w.companyId === companyId),
+    );
+  };
+
+  /** 库存导入常用：编码或名称任一命中即可（你们导出往往只有仓库名称） */
+  const resolveWarehouse = (codeOrName: string, fallbackName?: string) => {
+    const a = norm(codeOrName);
+    const b = norm(fallbackName || '');
+    if (a) {
+      const byCode = getWarehouseByCode(a);
+      if (byCode) return byCode;
+      const byName = getWarehouseByName(a);
+      if (byName) return byName;
+    }
+    if (b && b !== a) {
+      const byCode = getWarehouseByCode(b);
+      if (byCode) return byCode;
+      const byName = getWarehouseByName(b);
+      if (byName) return byName;
+    }
+    return undefined;
+  };
 
   const getWarehousesByIds = (ids: string[]) =>
     warehouses.value.filter(w => ids.includes(w.id));
@@ -70,14 +105,55 @@ export const useWarehouseStore = defineStore('warehouse', () => {
   const getWarehousesByCompany = (companyId: string) =>
     warehouses.value.filter(w => w.companyId === companyId);
 
-  const upsertByCode = (data: Omit<Warehouse, 'id'>) => {
-    const existing = getWarehouseByCode(data.code);
+  /**
+   * 按编码优先覆盖；无编码时按名称覆盖。
+   * 可把 code 默认成 name，便于库存 Excel 只有仓库名时匹配。
+   */
+  const upsertWarehouse = (data: Omit<Warehouse, 'id'> & { code?: string }) => {
+    const name = norm(data.name);
+    const code = norm(data.code || '') || name;
+    if (!name || !code) throw new Error('仓库名称不能为空');
+    if (!data.companyId) throw new Error('所属主体不能为空');
+
+    const existing =
+      getWarehouseByCode(code) ||
+      getWarehouseByName(name, data.companyId) ||
+      getWarehouseByName(name);
+
+    const payload = { code, name, companyId: data.companyId };
     if (existing) {
-      updateWarehouse(existing.id, data);
+      updateWarehouse(existing.id, payload);
       return existing.id;
     }
-    addWarehouse(data);
+    addWarehouse(payload);
     return warehouses.value[warehouses.value.length - 1]?.id;
+  };
+
+  /** @deprecated 使用 upsertWarehouse */
+  const upsertByCode = (data: Omit<Warehouse, 'id'>) => upsertWarehouse(data);
+
+  const batchUpdate = (ids: string[], patchFn: (w: Warehouse) => Partial<Warehouse>) => {
+    let n = 0;
+    const idSet = new Set(ids);
+    warehouses.value.forEach((w, i) => {
+      if (!idSet.has(w.id)) return;
+      warehouses.value[i] = { ...w, ...patchFn(w) };
+      n += 1;
+    });
+    return n;
+  };
+
+  /** 把编码改成与名称相同（方便库存导入用名称匹配） */
+  const syncCodeToName = (ids?: string[]) => {
+    const idSet = ids?.length ? new Set(ids) : null;
+    let n = 0;
+    warehouses.value.forEach((w, i) => {
+      if (idSet && !idSet.has(w.id)) return;
+      if (norm(w.code) === norm(w.name)) return;
+      warehouses.value[i] = { ...w, code: w.name };
+      n += 1;
+    });
+    return n;
   };
 
   return {
@@ -89,8 +165,13 @@ export const useWarehouseStore = defineStore('warehouse', () => {
     deleteWarehouse,
     getWarehouseById,
     getWarehouseByCode,
+    getWarehouseByName,
+    resolveWarehouse,
     getWarehousesByIds,
     getWarehousesByCompany,
+    upsertWarehouse,
     upsertByCode,
+    batchUpdate,
+    syncCodeToName,
   };
 }, { persist: true });

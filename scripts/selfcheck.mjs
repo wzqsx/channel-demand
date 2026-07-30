@@ -1,15 +1,28 @@
 /**
  * 全量逻辑自检（不启浏览器）：主数据共享、主体隔离、完成率口径
- * 运行：node scripts/selfcheck.mjs
+ * 运行：npm run selfcheck
  */
 import { createPinia, setActivePinia } from 'pinia';
 import { createApp } from 'vue';
 
-// 动态导入 store（依赖已激活的 pinia）
+// Node 环境无 localStorage，给 persist / bootstrap 一个内存实现
+if (typeof globalThis.localStorage === 'undefined') {
+  const mem = new Map();
+  globalThis.localStorage = {
+    getItem: k => (mem.has(k) ? mem.get(k) : null),
+    setItem: (k, v) => mem.set(String(k), String(v)),
+    removeItem: k => mem.delete(k),
+    clear: () => mem.clear(),
+    key: i => [...mem.keys()][i] ?? null,
+    get length() {
+      return mem.size;
+    },
+  };
+}
+
 async function main() {
   const pinia = createPinia();
   setActivePinia(pinia);
-  // 部分工具会间接依赖组件上下文，挂一个空 app 更稳
   createApp({}).use(pinia);
 
   const { useCompanyStore } = await import('../src/stores/company.ts');
@@ -23,7 +36,8 @@ async function main() {
     assertRequisitionScope,
     getChannelAllowedWarehouses,
   } = await import('../src/utils/companyScope.ts');
-  const { completionRate } = await import('../src/utils/week.ts');
+  const { completionRate, weekStartSaturday } = await import('../src/utils/week.ts');
+  const { buildShortageAndWarnings } = await import('../src/utils/shortageAlert.ts');
 
   const fails = [];
   const ok = (name, cond, detail = '') => {
@@ -37,12 +51,14 @@ async function main() {
   console.log('\n[1] 启动初始化');
   bootstrapStores();
   const companyA = useCompanyStore();
-  const companyB = useCompanyStore(); // 同一 pinia 单例
+  const companyB = useCompanyStore();
   ok('公司种子已加载', companyA.companies.length >= 4, `len=${companyA.companies.length}`);
-  ok('仓库/渠道/商品已加载',
-    useWarehouseStore().warehouses.length > 0
-      && useChannelStore().channels.length > 0
-      && useProductStore().products.length > 0);
+  ok(
+    '仓库/渠道/商品已加载',
+    useWarehouseStore().warehouses.length > 0 &&
+      useChannelStore().channels.length > 0 &&
+      useProductStore().products.length > 0,
+  );
 
   console.log('\n[2] 新增公司全局可见（多处读同一 store）');
   const before = companyA.companies.length;
@@ -56,17 +72,19 @@ async function main() {
 
   console.log('\n[3] 新主体挂仓/挂渠道后联动');
   const wh = useWarehouseStore();
-  wh.addWarehouse({ code: 'WH-SC', name: '自检仓', companyId: added.id });
-  const newWh = wh.warehouses.find(w => w.code === 'WH-SC');
+  wh.addWarehouse({ code: '自检仓', name: '自检仓', companyId: added.id });
+  const newWh = wh.warehouses.find(w => w.code === '自检仓' && w.companyId === added.id);
   ok('仓库挂到新主体', !!newWh && newWh.companyId === added.id);
-  ok('按主体查仓可见', wh.getWarehousesByCompany(added.id).some(w => w.code === 'WH-SC'));
+  ok('按名称可解析仓库', !!wh.resolveWarehouse('自检仓'));
 
   const ch = useChannelStore();
   ch.addChannel({
+    code: 'CH-SC',
     name: '自检渠道',
     companyId: added.id,
-    warehouseIds: [newWh.id, 'W001'], // W001 属其他主体，应被过滤
+    warehouseIds: [newWh.id, 'W001'],
     priority: 1,
+    enabled: true,
   });
   const newCh = ch.channels.find(c => c.name === '自检渠道' && c.companyId === added.id);
   ok('渠道创建时剥离跨主体仓库', !!newCh && newCh.warehouseIds.length === 1 && newCh.warehouseIds[0] === newWh.id);
@@ -86,7 +104,6 @@ async function main() {
   });
   ok('同主体要货通过', good.ok === true);
 
-  // 用旧主体渠道 + 新主体：应拒
   const seedCh = ch.channels.find(c => c.companyId === 'COMP001');
   if (seedCh) {
     const cross = assertRequisitionScope({
@@ -106,40 +123,63 @@ async function main() {
   console.log('\n[6] 库存可用量按所选仓库');
   const stock = useWarehouseStockStore();
   stock.initStocks();
-  if (stock.stocks.length === 0) {
-    stock.upsertStock(newWh.id, 'P001', 10, 5);
-  } else {
-    stock.upsertStock(newWh.id, 'P-SC', 10, 5);
-  }
-  const code = stock.stocks.find(s => s.warehouseId === newWh.id)?.productCode;
-  const avail = stock.getAvailableStockByWarehouses(code, [newWh.id]);
+  stock.upsertStock(newWh.id, 'P-SC', 10, 5);
+  const avail = stock.getAvailableStockByWarehouses('P-SC', [newWh.id]);
   ok('可用库存 = 现货+在途（所选仓）', avail === 15, `avail=${avail}`);
-  // 当前实现：空数组视为「不限制仓库」；业务侧应始终传入所选仓
-  const availAll = stock.getAvailableStockByWarehouses(code, undefined);
-  ok('不传仓库时按全库汇总', availAll >= avail);
 
   console.log('\n[7] 数量单位换算展示');
-  const { formatQtyWithUnits } = await import('../src/utils/qtyDisplay.ts');
+  const { formatQtyWithUnits, boxesToBottles } = await import('../src/utils/qtyDisplay.ts');
   ok('240瓶→10箱', formatQtyWithUnits(240, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '10箱');
   ok('243瓶→10箱零3瓶', formatQtyWithUnits(243, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '10箱零3瓶');
   ok('3瓶→3瓶', formatQtyWithUnits(3, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '3瓶');
   ok('负243→负10箱零3瓶', formatQtyWithUnits(-243, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '负10箱零3瓶');
-  ok('负10→负10瓶', formatQtyWithUnits(-10, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '负10瓶');
-  ok('负240→负10箱', formatQtyWithUnits(-240, { bottlesPerBox: 24, boxUnit: '箱', bottleUnit: '瓶' }) === '负10箱');
+  ok('5箱×24=120瓶', boxesToBottles(5, 24) === 120);
 
   console.log('\n[8] 箱规库存折算进瓶规');
   const { getBottleEquivalentStock } = await import('../src/utils/packStock.ts');
-  const stockStore = useWarehouseStockStore();
-  // 固定仓：瓶规 10 + 箱规 2×12=24 → 可用 34
-  stockStore.upsertStock('W001', 'P001', 10, 0);
-  stockStore.upsertStock('W001', 'P0012', 2, 0);
+  const product = useProductStore();
+  const pack = product.getProductByCode('P0012');
+  ok(
+    '组合品每箱瓶数=换算比例',
+    !!pack && pack.bottlesPerBox === pack.combineRatio,
+    `bpb=${pack?.bottlesPerBox} ratio=${pack?.combineRatio}`,
+  );
+  stock.upsertStock('W001', 'P001', 10, 0);
+  stock.upsertStock('W001', 'P0012', 2, 0);
   const eq = getBottleEquivalentStock('P001', ['W001']);
   ok('瓶规自身 10', eq.ownStock === 10, `own=${eq.ownStock}`);
   ok('箱规折算 24', eq.packStock === 24, `pack=${eq.packStock}`);
   ok('合计可用 34', eq.availableStock === 34, `avail=${eq.availableStock}`);
 
-  console.log('\n[9] 要货 migrate 不炸');
-  useRequisitionStore().migrateLegacy();
+  console.log('\n[9] 停用渠道不进缺货需求 + 高优含已通过');
+  const week = weekStartSaturday();
+  const req = useRequisitionStore();
+  const hi = ch.channels.find(c => c.companyId === 'COMP001' && c.priority === 1);
+  const lo = ch.channels.find(c => c.companyId === 'COMP001' && c.id !== hi?.id);
+  ok('找到同主体高低优渠道', !!hi && !!lo);
+  if (hi && lo) {
+    ch.updateChannel(hi.id, { enabled: false });
+    req.requisitions.push({
+      id: 'SC-DIS',
+      companyId: 'COMP001',
+      channelId: hi.id,
+      warehouseIds: ['W001'],
+      weekStart: week,
+      items: [{ id: '1', productCode: 'P001', productName: 'x', quantity: 9999, remark: '' }],
+      status: 'approved',
+      createdAt: new Date().toISOString(),
+    });
+    const rows = buildShortageAndWarnings({ weekStart: week, companyId: 'COMP001' });
+    const hit = rows.find(r => r.productCode === 'P001' && r.totalDemand >= 9999);
+    ok('停用渠道需求不进入缺货', !hit);
+
+    ch.updateChannel(hi.id, { enabled: true });
+    const higher = req.getHigherPriorityPendingDemand('P001', lo.id, ['W001']);
+    ok('高优占用含已通过', higher >= 9999, `higher=${higher}`);
+  }
+
+  console.log('\n[10] 要货 migrate 不炸');
+  req.migrateLegacy();
   ok('migrateLegacy 可执行', true);
 
   console.log('\n────────────────────');

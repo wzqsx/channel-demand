@@ -355,26 +355,57 @@ const compareTag = (status: DemandSalesCompareRow['status']) => {
         class="erp-data-table"
         height="100%"
       >
-        <ElTableColumn label="主体" width="120">
+        <ElTableColumn type="index" label="序号" width="55" fixed="left" />
+        <ElTableColumn
+          label="主体"
+          width="120"
+          sortable
+          :sort-method="(a: SummaryRow, b: SummaryRow) => getCompanyName(a.companyId).localeCompare(getCompanyName(b.companyId), 'zh-CN')"
+        >
           <template #default="{ row }">{{ getCompanyName((row as SummaryRow).companyId) }}</template>
         </ElTableColumn>
-        <ElTableColumn label="渠道" width="120">
+        <ElTableColumn
+          label="渠道"
+          width="120"
+          sortable
+          :sort-method="(a: SummaryRow, b: SummaryRow) => getChannelName(a.channelId).localeCompare(getChannelName(b.channelId), 'zh-CN')"
+        >
           <template #default="{ row }">{{ getChannelName((row as SummaryRow).channelId) }}</template>
         </ElTableColumn>
-        <ElTableColumn label="要货合计(瓶)" width="110">
+        <ElTableColumn
+          label="要货合计(瓶)"
+          width="110"
+          sortable
+          :sort-method="(a: SummaryRow, b: SummaryRow) => a.demandTotal - b.demandTotal"
+        >
           <template #default="{ row }">{{ (row as SummaryRow).demandTotal }}</template>
         </ElTableColumn>
-        <ElTableColumn label="销货合计(瓶)" width="110">
+        <ElTableColumn
+          label="销货合计(瓶)"
+          width="110"
+          sortable
+          :sort-method="(a: SummaryRow, b: SummaryRow) => a.salesTotal - b.salesTotal"
+        >
           <template #default="{ row }">{{ (row as SummaryRow).salesTotal }}</template>
         </ElTableColumn>
-        <ElTableColumn label="虚报量(瓶)" width="100">
+        <ElTableColumn
+          label="虚报量(瓶)"
+          width="100"
+          sortable
+          :sort-method="(a: SummaryRow, b: SummaryRow) => a.overClaimTotal - b.overClaimTotal"
+        >
           <template #default="{ row }">
             <span :class="{ danger: (row as SummaryRow).overClaimTotal > 0 }">
               {{ (row as SummaryRow).overClaimTotal }}
             </span>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="完成率" width="90">
+        <ElTableColumn
+          label="完成率"
+          width="90"
+          sortable
+          :sort-method="(a: SummaryRow, b: SummaryRow) => a.fillRate - b.fillRate"
+        >
           <template #default="{ row }">{{ (row as SummaryRow).fillRate }}%</template>
         </ElTableColumn>
         <ElTableColumn label="结论" min-width="130">
@@ -456,6 +487,7 @@ const compareTag = (status: DemandSalesCompareRow['status']) => {
         </div>
 
         <ElTable :data="salesRows" border size="small" max-height="380">
+          <ElTableColumn type="index" label="序号" width="55" />
           <ElTableColumn label="商品编码" width="140">
             <template #default="{ row }">
               <ElInput
@@ -516,19 +548,20 @@ const compareTag = (status: DemandSalesCompareRow['status']) => {
     <!-- 核对明细只读 -->
     <ElDialog v-model="detailVisible" :title="detailTitle" width="860px">
       <ElTable :data="detailRows" border size="small" max-height="420">
-        <ElTableColumn prop="productCode" label="编码" width="110" />
-        <ElTableColumn prop="productName" label="名称" min-width="140" />
-        <ElTableColumn label="要货" width="110" show-overflow-tooltip>
+        <ElTableColumn type="index" label="序号" width="55" />
+        <ElTableColumn prop="productCode" label="编码" width="110" sortable />
+        <ElTableColumn prop="productName" label="名称" min-width="140" sortable />
+        <ElTableColumn prop="demandQty" label="要货" width="110" sortable show-overflow-tooltip>
           <template #default="{ row }">
             {{ formatProductQty((row as DemandSalesCompareRow).demandQty, (row as DemandSalesCompareRow).productCode) }}
           </template>
         </ElTableColumn>
-        <ElTableColumn label="销货" width="110" show-overflow-tooltip>
+        <ElTableColumn prop="salesQty" label="销货" width="110" sortable show-overflow-tooltip>
           <template #default="{ row }">
             {{ formatProductQty((row as DemandSalesCompareRow).salesQty, (row as DemandSalesCompareRow).productCode) }}
           </template>
         </ElTableColumn>
-        <ElTableColumn label="虚报量" width="110" show-overflow-tooltip>
+        <ElTableColumn prop="overClaim" label="虚报量" width="110" sortable show-overflow-tooltip>
           <template #default="{ row }">
             {{ formatProductQty((row as DemandSalesCompareRow).overClaim, (row as DemandSalesCompareRow).productCode) }}
           </template>

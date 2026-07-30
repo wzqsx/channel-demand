@@ -220,21 +220,27 @@ const handleExport = () => {
             class="block-table"
             table-layout="auto"
           >
-            <ElTableColumn label="类型" width="72">
+            <ElTableColumn type="index" label="序号" width="55" fixed="left" />
+            <ElTableColumn
+              label="类型"
+              width="72"
+              sortable
+              :sort-method="(a: ShortageAlertRow, b: ShortageAlertRow) => a.kind.localeCompare(b.kind)"
+            >
               <template #default="{ row }">
                 <ElTag size="small" :type="kindTag((row as ShortageAlertRow).kind).type">
                   {{ kindTag((row as ShortageAlertRow).kind).label }}
                 </ElTag>
               </template>
             </ElTableColumn>
-            <ElTableColumn prop="productCode" label="编码" width="100" />
-            <ElTableColumn prop="productName" label="商品" min-width="120" show-overflow-tooltip />
-            <ElTableColumn label="可用库存" min-width="110" show-overflow-tooltip>
+            <ElTableColumn prop="productCode" label="编码" width="100" sortable />
+            <ElTableColumn prop="productName" label="商品" min-width="120" sortable show-overflow-tooltip />
+            <ElTableColumn prop="availableStock" label="可用库存" min-width="110" sortable show-overflow-tooltip>
               <template #default="{ row }">
                 {{ fmtQty((row as ShortageAlertRow).availableStock, (row as ShortageAlertRow).productCode) }}
               </template>
             </ElTableColumn>
-            <ElTableColumn label="其中箱规折算" min-width="110" show-overflow-tooltip>
+            <ElTableColumn prop="packStock" label="其中箱规折算" min-width="110" sortable show-overflow-tooltip>
               <template #default="{ row }">
                 {{
                   (row as ShortageAlertRow).packStock > 0
@@ -243,17 +249,17 @@ const handleExport = () => {
                 }}
               </template>
             </ElTableColumn>
-            <ElTableColumn label="预警线" min-width="100" show-overflow-tooltip>
+            <ElTableColumn prop="warningThreshold" label="预警线" min-width="100" sortable show-overflow-tooltip>
               <template #default="{ row }">
                 {{ fmtQty((row as ShortageAlertRow).warningThreshold, (row as ShortageAlertRow).productCode) }}
               </template>
             </ElTableColumn>
-            <ElTableColumn label="要货需求" min-width="110" show-overflow-tooltip>
+            <ElTableColumn prop="totalDemand" label="要货需求" min-width="110" sortable show-overflow-tooltip>
               <template #default="{ row }">
                 {{ fmtQty((row as ShortageAlertRow).totalDemand, (row as ShortageAlertRow).productCode) }}
               </template>
             </ElTableColumn>
-            <ElTableColumn label="缺口" min-width="120" show-overflow-tooltip>
+            <ElTableColumn prop="shortage" label="缺口" min-width="120" sortable show-overflow-tooltip>
               <template #default="{ row }">
                 <span :class="{ danger: (row as ShortageAlertRow).shortage > 0 }">
                   {{ fmtQty((row as ShortageAlertRow).shortage, (row as ShortageAlertRow).productCode) }}

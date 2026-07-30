@@ -85,7 +85,10 @@ export interface WarehouseStock {
 }
 
 export interface ImportWarehouseStockData {
+  /** 仓库编码；也可填仓库名称（导出无编码时） */
   warehouseCode: string;
+  /** 仓库名称（可选；与编码二选一或同时提供） */
+  warehouseName?: string;
   productCode: string;
   productName: string;
   stock: number;
