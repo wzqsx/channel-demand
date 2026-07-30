@@ -113,6 +113,13 @@ export async function stockDbRestoreBackup() {
   }>('/api/stocks/restore-backup', { method: 'POST', body: '{}' });
 }
 
+export async function stockDbFileBackup() {
+  return request<{ path: string; fileName: string }>('/api/stocks/file-backup', {
+    method: 'POST',
+    body: '{}',
+  });
+}
+
 export async function stockDbSaveCustomFields(
   customFields: import('../types').CustomFieldConfig[],
 ) {

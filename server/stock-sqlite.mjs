@@ -51,6 +51,12 @@ db.exec(`
     custom_fields TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS custom_fields_backup (
+    key TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'text'
+  );
+
   CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -140,12 +146,17 @@ function backupNow(reason = 'import') {
   const countRow = db.prepare('SELECT COUNT(*) AS c FROM stocks').get();
   const count = Number(countRow?.c || 0);
   db.exec('DELETE FROM stocks_backup');
+  db.exec('DELETE FROM custom_fields_backup');
   if (count > 0) {
     db.exec(`
       INSERT INTO stocks_backup(id, warehouse_id, product_code, stock, in_transit, custom_fields)
       SELECT id, warehouse_id, product_code, stock, in_transit, custom_fields FROM stocks
     `);
   }
+  db.exec(`
+    INSERT INTO custom_fields_backup(key, label, type)
+    SELECT key, label, type FROM custom_fields
+  `);
   const meta = {
     at: new Date().toISOString(),
     rowCount: count,
@@ -160,13 +171,57 @@ function restoreBackup() {
   if (!raw) throw new Error('没有可用的导入前备份');
   const meta = JSON.parse(raw);
   const bakCount = Number(db.prepare('SELECT COUNT(*) AS c FROM stocks_backup').get()?.c || 0);
-  if (!bakCount) throw new Error('备份表为空');
-  db.exec('DELETE FROM stocks');
-  db.exec(`
-    INSERT INTO stocks(id, warehouse_id, product_code, stock, in_transit, custom_fields)
-    SELECT id, warehouse_id, product_code, stock, in_transit, custom_fields FROM stocks_backup
-  `);
+  if (!bakCount && meta.rowCount > 0) throw new Error('备份表为空');
+  db.exec('BEGIN');
+  try {
+    db.exec('DELETE FROM stocks');
+    db.exec(`
+      INSERT INTO stocks(id, warehouse_id, product_code, stock, in_transit, custom_fields)
+      SELECT id, warehouse_id, product_code, stock, in_transit, custom_fields FROM stocks_backup
+    `);
+    db.exec('DELETE FROM custom_fields');
+    db.exec(`
+      INSERT INTO custom_fields(key, label, type)
+      SELECT key, label, type FROM custom_fields_backup
+    `);
+    db.exec('COMMIT');
+  } catch (e) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* ignore */
+    }
+    throw e;
+  }
   return meta;
+}
+
+function snapshotDbFile() {
+  const bakDir = path.join(DATA_DIR, 'backups');
+  fs.mkdirSync(bakDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const dest = path.join(bakDir, `stock-${stamp}.db`);
+  // WAL 模式下先 checkpoint 再拷贝，减少半截文件
+  try {
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+  } catch {
+    /* ignore */
+  }
+  fs.copyFileSync(DB_PATH, dest);
+  // 只保留最近 10 份文件备份
+  const files = fs
+    .readdirSync(bakDir)
+    .filter(f => f.startsWith('stock-') && f.endsWith('.db'))
+    .map(f => ({ f, t: fs.statSync(path.join(bakDir, f)).mtimeMs }))
+    .sort((a, b) => b.t - a.t);
+  for (const old of files.slice(10)) {
+    try {
+      fs.unlinkSync(path.join(bakDir, old.f));
+    } catch {
+      /* ignore */
+    }
+  }
+  return { path: dest, fileName: path.basename(dest) };
 }
 
 function replaceCustomFields(fields) {
@@ -349,6 +404,26 @@ const server = http.createServer(async (req, res) => {
         stocks: getAllStocks(),
         customFields: getCustomFields(),
       });
+    }
+
+    if (req.method === 'POST' && p === '/api/stocks/file-backup') {
+      const info = snapshotDbFile();
+      return json(res, 200, info);
+    }
+
+    if (req.method === 'GET' && p === '/api/stocks/file-backups') {
+      const bakDir = path.join(DATA_DIR, 'backups');
+      if (!fs.existsSync(bakDir)) return json(res, 200, { files: [] });
+      const files = fs
+        .readdirSync(bakDir)
+        .filter(f => f.startsWith('stock-') && f.endsWith('.db'))
+        .map(f => {
+          const full = path.join(bakDir, f);
+          const st = fs.statSync(full);
+          return { fileName: f, path: full, size: st.size, mtime: st.mtime.toISOString() };
+        })
+        .sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
+      return json(res, 200, { files });
     }
 
     if (req.method === 'PUT' && p === '/api/stocks/custom-fields') {

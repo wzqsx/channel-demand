@@ -41,6 +41,8 @@ import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyF
 import { formatCompanyLabel } from '../utils/companyDisplay';
 import { useTableColumnPrefs, type ColumnMeta } from '../composables/useTableColumnPrefs';
 import { getBottleEquivalentStock, resolveToBottleBase } from '../utils/packStock';
+import { stockDbFileBackup } from '../api/stockDb';
+import { yieldToMain } from '../utils/idbKv';
 
 const router = useRouter();
 const stockStore = useWarehouseStockStore();
@@ -50,7 +52,7 @@ const companyStore = useCompanyStore();
 const requisitionStore = useRequisitionStore();
 const channelStore = useChannelStore();
 
-const { stocks, customFields } = storeToRefs(stockStore);
+const { stocks, customFields, useSqlite, sqliteDbPath } = storeToRefs(stockStore);
 const { warehouses } = storeToRefs(warehouseStore);
 const { products } = storeToRefs(productStore);
 
@@ -264,7 +266,7 @@ const handleImport = async (event: Event) => {
   const file = input.files?.[0];
   if (!file) return;
 
-  const loading = ElLoading.service({
+  let loading = ElLoading.service({
     lock: true,
     text: '正在解析 Excel…',
     background: 'rgba(255, 255, 255, 0.72)',
@@ -276,6 +278,24 @@ const handleImport = async (event: Event) => {
     if (!jsonData.length) {
       ElMessage.warning('Excel 无有效数据');
       return;
+    }
+
+    if (jsonData.length >= 12000 && !useSqlite.value) {
+      loading.close();
+      try {
+        await ElMessageBox.confirm(
+          `本次约 ${jsonData.length.toLocaleString()} 行，当前未连上 SQLite。\n建议先执行 npm run dev（会启动库存库），或拆成每次约 1 万行再导入。\n仍要用浏览器模式继续吗？`,
+          '大批量导入提醒',
+          { type: 'warning', confirmButtonText: '继续导入', cancelButtonText: '取消' },
+        );
+      } catch {
+        return;
+      }
+      loading = ElLoading.service({
+        lock: true,
+        text: `正在导入 ${jsonData.length.toLocaleString()} 行…`,
+        background: 'rgba(255, 255, 255, 0.72)',
+      });
     }
 
     if (jsonData.length >= 50000) {
@@ -698,10 +718,10 @@ const buildStockExportRow = (stock: WarehouseStock) => {
 
 const handleExport = async () => {
   const list = filteredStocks.value;
-  if (list.length >= 30000) {
+  if (list.length >= 20000) {
     try {
       await ElMessageBox.confirm(
-        `当前列表约 ${list.length.toLocaleString()} 行，导出可能较慢并占用内存。是否继续？`,
+        `当前列表约 ${list.length.toLocaleString()} 行，导出可能较慢。建议先按主体/仓库筛选，或分批导出。是否继续？`,
         '导出确认',
         { type: 'warning', confirmButtonText: '继续导出', cancelButtonText: '取消' },
       );
@@ -711,10 +731,32 @@ const handleExport = async () => {
   }
   const loading = ElLoading.service({ lock: true, text: '正在导出…' });
   try {
-    await new Promise<void>(r => setTimeout(r, 0));
-    const rows = list.map(buildStockExportRow);
+    const rows: Record<string, string | number>[] = [];
+    const CHUNK = 2000;
+    for (let i = 0; i < list.length; i += CHUNK) {
+      const slice = list.slice(i, i + CHUNK);
+      for (const s of slice) rows.push(buildStockExportRow(s));
+      loading.setText(`正在导出 ${Math.min(i + CHUNK, list.length).toLocaleString()} / ${list.length.toLocaleString()}`);
+      await yieldToMain();
+    }
     exportRows(rows, '库存');
     ElMessage.success(`已导出 ${rows.length} 条`);
+  } finally {
+    loading.close();
+  }
+};
+
+const makeFileBackup = async () => {
+  if (!useSqlite.value) {
+    ElMessage.warning('请先用 npm run dev 启动 SQLite 服务');
+    return;
+  }
+  const loading = ElLoading.service({ lock: true, text: '正在复制库文件…' });
+  try {
+    const info = await stockDbFileBackup();
+    ElMessage.success(`已生成文件备份：data/backups/${info.fileName}`);
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '文件备份失败');
   } finally {
     loading.close();
   }
@@ -732,6 +774,7 @@ const handleExcelCommand = (cmd: string | number) => {
   else if (cmd === 'fields') openFieldDialog();
   else if (cmd === 'shortage') goShortageAlert();
   else if (cmd === 'restore-backup') void restorePreImportBackup();
+  else if (cmd === 'file-backup') void makeFileBackup();
 };
 
 // 字段管理相关方法
@@ -784,6 +827,13 @@ const handleFieldDelete = (key: string) => {
     <template #toolbar>
       <div class="stock-toolbar">
         <div class="stock-toolbar__left">
+          <span
+            class="sqlite-badge"
+            :class="useSqlite ? 'is-on' : 'is-off'"
+            :title="useSqlite ? sqliteDbPath || 'SQLite 已连接' : '未连接 SQLite，导入将走浏览器兜底'"
+          >
+            {{ useSqlite ? 'SQLite' : '浏览器库' }}
+          </span>
           <ElDatePicker
             v-model="importWeekStart"
             type="date"
@@ -835,7 +885,19 @@ const handleFieldDelete = (key: string) => {
                 >
                   恢复导入前备份
                 </ElDropdownItem>
-                <ElDropdownItem command="shortage" :divided="!canRestoreBackup">缺货与预警</ElDropdownItem>
+                <ElDropdownItem
+                  v-if="useSqlite"
+                  command="file-backup"
+                  :divided="!canRestoreBackup"
+                >
+                  复制库文件备份
+                </ElDropdownItem>
+                <ElDropdownItem
+                  command="shortage"
+                  :divided="!canRestoreBackup && !useSqlite"
+                >
+                  缺货与预警
+                </ElDropdownItem>
               </ElDropdownMenu>
             </template>
           </ElDropdown>
@@ -1138,6 +1200,24 @@ const handleFieldDelete = (key: string) => {
 }
 .stock-toolbar__date {
   width: 150px;
+}
+.sqlite-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.sqlite-badge.is-on {
+  color: #067647;
+  background: #ecfdf3;
+}
+.sqlite-badge.is-off {
+  color: #b54708;
+  background: #fffaeb;
 }
 .stock-toolbar__caret {
   margin-left: 4px;
