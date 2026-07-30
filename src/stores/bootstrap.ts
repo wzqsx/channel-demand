@@ -4,6 +4,7 @@ import { useChannelStore } from './channel';
 import { useProductStore } from './product';
 import { useWarehouseStockStore } from './warehouseStock';
 import { useRequisitionStore } from './requisition';
+import { useStockSnapshotStore } from './stockSnapshot';
 import { hasAnyPersistedBusinessData } from '../utils/dataBackup';
 
 /**
@@ -20,6 +21,8 @@ export function bootstrapStores() {
   const product = useProductStore();
   const stock = useWarehouseStockStore();
   const requisition = useRequisitionStore();
+  const snapshot = useStockSnapshotStore();
+  snapshot.compactIfNeeded();
 
   if (!hasPersisted) {
     company.initCompanies();

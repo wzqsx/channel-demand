@@ -269,6 +269,27 @@ async function main() {
     ok('migrateLegacy 可执行（无跨主体仓样本）', true);
   }
 
+  console.log('\n[11] 库存批量导入性能');
+  const stockStore = useWarehouseStockStore();
+  const rows = [];
+  const whList = wh.warehouses;
+  for (let i = 0; i < 3000; i++) {
+    const w = whList[i % whList.length];
+    rows.push({
+      warehouseCode: w.code,
+      warehouseName: w.name,
+      productCode: `BENCH${String(i % 300).padStart(3, '0')}`,
+      productName: 'bench',
+      stock: i,
+      inTransitStock: 0,
+    });
+  }
+  const t0 = Date.now();
+  const ir = stockStore.importStocks(rows, true, 'bench', week);
+  const ms = Date.now() - t0;
+  ok('批量导入 3000 行成功', ir.imported === 3000, `imported=${ir.imported}`);
+  ok('批量导入 < 2s', ms < 2000, `ms=${ms}`);
+
   console.log('\n────────────────────');
   if (fails.length) {
     console.error(`自检失败 ${fails.length} 项:\n - ${fails.join('\n - ')}`);

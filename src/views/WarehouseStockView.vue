@@ -20,6 +20,7 @@ import {
   ElDropdown,
   ElDropdownMenu,
   ElDropdownItem,
+  ElLoading,
 } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
 import MultiCheckFilter from '../components/MultiCheckFilter.vue';
@@ -221,65 +222,99 @@ const STOCK_HEADER_ALIASES = {
 } as const;
 
 const handleImport = async (event: Event) => {
-  const jsonData = await readExcelFromEvent(event);
-  if (!jsonData.length) return;
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
 
-  const knownLabels = new Set<string>([...STOCK_HEADERS]);
-  const knownAlias = new Set<string>([
-    ...STOCK_HEADERS,
-    '库存',
-    '在途库存',
-    '仓库',
-    'warehouseCode',
-    'warehouseName',
-    'productCode',
-    'productName',
-    'stock',
-    'inTransitStock',
-  ]);
-
-  const importData: ImportWarehouseStockData[] = jsonData.map(item => {
-    const warehouseName = cell(item, ...STOCK_HEADER_ALIASES.warehouseName);
-    const warehouseCode =
-      cell(item, ...STOCK_HEADER_ALIASES.warehouseCode) || warehouseName;
-    const result: ImportWarehouseStockData = {
-      warehouseCode,
-      warehouseName,
-      productCode: cell(item, '商品编码', 'productCode'),
-      productName: cell(item, '商品名称', 'productName'),
-      stock: cellNum(item, ...STOCK_HEADER_ALIASES.stock),
-      inTransitStock: cellNum(item, ...STOCK_HEADER_ALIASES.inTransit),
-    };
-
-    for (const key in item) {
-      if (!knownLabels.has(key) && !knownAlias.has(key)) {
-        result[key] = item[key];
-      }
-    }
-
-    return result;
+  const loading = ElLoading.service({
+    lock: true,
+    text: '正在解析 Excel…',
+    background: 'rgba(255, 255, 255, 0.72)',
   });
 
-  const week = weekStartSaturday(importWeekStart.value);
-  const description = isReplaceMode.value
-    ? `全量替换前备份 · ${week}`
-    : `增量导入前备份 · ${week}`;
+  try {
+    // 让 loading 先上屏，再读文件
+    await new Promise<void>(r => requestAnimationFrame(() => r()));
+    const jsonData = await readExcelFromEvent(event);
+    if (!jsonData.length) {
+      ElMessage.warning('Excel 无有效数据');
+      return;
+    }
 
-  const result = stockStore.importStocks(importData, isReplaceMode.value, description, week);
-  const skipParts = [
-    result.skippedWarehouse ? `仓库名/编码不匹配 ${result.skippedWarehouse}` : '',
-    result.skippedNoCode ? `缺仓库或商品编码 ${result.skippedNoCode}` : '',
-  ].filter(Boolean);
-  const negPart = result.negativeRows ? `，其中负库存 ${result.negativeRows} 行` : '';
-  const skipPart = skipParts.length ? `，跳过 ${skipParts.join('、')}` : '';
-  ElMessage.success(
-    (isReplaceMode.value
-      ? `全量替换完成（成功 ${result.imported}/${result.total}）`
-      : `增量导入完成（成功 ${result.imported}/${result.total}）`) +
-      negPart +
-      skipPart +
-      ` · ${week}`,
-  );
+    loading.setText(`正在导入 ${jsonData.length} 行…`);
+    await new Promise<void>(r => setTimeout(r, 0));
+
+    const knownLabels = new Set<string>([...STOCK_HEADERS]);
+    const knownAlias = new Set<string>([
+      ...STOCK_HEADERS,
+      '库存',
+      '在途库存',
+      '仓库',
+      'warehouseCode',
+      'warehouseName',
+      'productCode',
+      'productName',
+      'stock',
+      'inTransitStock',
+    ]);
+
+    const importData: ImportWarehouseStockData[] = jsonData.map(item => {
+      const warehouseName = cell(item, ...STOCK_HEADER_ALIASES.warehouseName);
+      const warehouseCode =
+        cell(item, ...STOCK_HEADER_ALIASES.warehouseCode) || warehouseName;
+      const result: ImportWarehouseStockData = {
+        warehouseCode,
+        warehouseName,
+        productCode: cell(item, '商品编码', 'productCode'),
+        productName: cell(item, '商品名称', 'productName'),
+        stock: cellNum(item, ...STOCK_HEADER_ALIASES.stock),
+        inTransitStock: cellNum(item, ...STOCK_HEADER_ALIASES.inTransit),
+      };
+
+      for (const key in item) {
+        if (!knownLabels.has(key) && !knownAlias.has(key)) {
+          result[key] = item[key];
+        }
+      }
+
+      return result;
+    });
+
+    const week = weekStartSaturday(importWeekStart.value);
+    const description = isReplaceMode.value
+      ? `全量替换前备份 · ${week}`
+      : `增量导入前备份 · ${week}`;
+
+    // 放到下一宏任务，避免与 Excel 解析同帧卡死主线程
+    await new Promise<void>(r => setTimeout(r, 0));
+    const result = stockStore.importStocks(
+      importData,
+      isReplaceMode.value,
+      description,
+      week,
+    );
+
+    const skipParts = [
+      result.skippedWarehouse ? `仓库名/编码不匹配 ${result.skippedWarehouse}` : '',
+      result.skippedNoCode ? `缺仓库或商品编码 ${result.skippedNoCode}` : '',
+    ].filter(Boolean);
+    const negPart = result.negativeRows ? `，其中负库存 ${result.negativeRows} 行` : '';
+    const skipPart = skipParts.length ? `，跳过 ${skipParts.join('、')}` : '';
+    ElMessage.success(
+      (isReplaceMode.value
+        ? `全量替换完成（成功 ${result.imported}/${result.total}）`
+        : `增量导入完成（成功 ${result.imported}/${result.total}）`) +
+        negPart +
+        skipPart +
+        ` · ${week}`,
+    );
+  } catch (e) {
+    console.error(e);
+    ElMessage.error(e instanceof Error ? e.message : '导入失败，请检查 Excel 格式与体积');
+  } finally {
+    loading.close();
+    isReplaceMode.value = false;
+  }
 };
 
 const getWarehouseName = (id: string) => {

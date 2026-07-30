@@ -2,6 +2,18 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import type { StockSnapshot, WarehouseStock } from '../types';
 
+/** 本地快照含整表库存，过多会撑爆 localStorage 导致导入卡死 */
+const MAX_SNAPSHOTS = 3;
+
+function cloneStocks(stocks: WarehouseStock[]): WarehouseStock[] {
+  try {
+    if (typeof structuredClone === 'function') return structuredClone(stocks);
+  } catch {
+    /* fall through */
+  }
+  return JSON.parse(JSON.stringify(stocks));
+}
+
 export const useStockSnapshotStore = defineStore('stockSnapshot', () => {
   const snapshots = ref<StockSnapshot[]>([]);
 
@@ -15,9 +27,10 @@ export const useStockSnapshotStore = defineStore('stockSnapshot', () => {
       snapshotTime: new Date().toISOString(),
       description: description || `库存备份 ${new Date().toLocaleString('zh-CN')}`,
       weekStart,
-      stocks: JSON.parse(JSON.stringify(stocks)),
+      stocks: cloneStocks(stocks),
     };
-    snapshots.value.unshift(snapshot);
+    // 先截断再写入，降低一次 persist 体积
+    snapshots.value = [snapshot, ...snapshots.value.slice(0, MAX_SNAPSHOTS - 1)];
     return snapshot;
   };
 
@@ -26,8 +39,7 @@ export const useStockSnapshotStore = defineStore('stockSnapshot', () => {
   const getSnapshotById = (id: string) => snapshots.value.find(s => s.id === id);
 
   const deleteSnapshot = (id: string) => {
-    const index = snapshots.value.findIndex(s => s.id === id);
-    if (index !== -1) snapshots.value.splice(index, 1);
+    snapshots.value = snapshots.value.filter(s => s.id !== id);
   };
 
   const getStockHistory = (productCode: string) => {
@@ -45,6 +57,13 @@ export const useStockSnapshotStore = defineStore('stockSnapshot', () => {
     return history;
   };
 
+  /** 启动时裁剪历史过大快照，避免旧数据继续拖慢写入 */
+  const compactIfNeeded = () => {
+    if (snapshots.value.length > MAX_SNAPSHOTS) {
+      snapshots.value = snapshots.value.slice(0, MAX_SNAPSHOTS);
+    }
+  };
+
   return {
     snapshots,
     createSnapshot,
@@ -52,5 +71,6 @@ export const useStockSnapshotStore = defineStore('stockSnapshot', () => {
     getSnapshotById,
     deleteSnapshot,
     getStockHistory,
+    compactIfNeeded,
   };
 }, { persist: true });

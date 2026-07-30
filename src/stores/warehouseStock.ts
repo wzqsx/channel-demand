@@ -10,6 +10,9 @@ import { useWarehouseStore } from './warehouse';
 import { useStockSnapshotStore } from './stockSnapshot';
 import { weekStartSaturday } from '../utils/week';
 
+const stockKey = (warehouseId: string, productCode: string) =>
+  `${warehouseId}__${productCode}`;
+
 export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   const stocks = ref<WarehouseStock[]>([]);
   const customFields = ref<CustomFieldConfig[]>([]);
@@ -79,24 +82,30 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
       s => s.warehouseId === warehouseId && s.productCode === productCode,
     );
     if (index !== -1) {
-      stocks.value[index].stock = stock;
-      stocks.value[index].inTransitStock = inTransitStock;
-      if (fields) stocks.value[index].customFields = fields;
-    } else {
-      stocks.value.push({
-        id: Date.now().toString() + Math.random().toString(36).slice(2, 7),
-        warehouseId,
-        productCode,
+      const cur = stocks.value[index];
+      stocks.value[index] = {
+        ...cur,
         stock,
         inTransitStock,
-        customFields: fields,
-      });
+        customFields: fields !== undefined ? fields : cur.customFields,
+      };
+    } else {
+      stocks.value = [
+        ...stocks.value,
+        {
+          id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+          warehouseId,
+          productCode,
+          stock,
+          inTransitStock,
+          customFields: fields,
+        },
+      ];
     }
   };
 
   const deleteStock = (id: string) => {
-    const index = stocks.value.findIndex(s => s.id === id);
-    if (index !== -1) stocks.value.splice(index, 1);
+    stocks.value = stocks.value.filter(s => s.id !== id);
   };
 
   const setCustomFields = (fields: CustomFieldConfig[]) => {
@@ -106,25 +115,23 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   const addCustomField = (field: Omit<CustomFieldConfig, 'key'>) => {
     const key = field.label.replace(/\s+/g, '_').toLowerCase();
     if (!customFields.value.find(f => f.key === key)) {
-      customFields.value.push({ key, ...field });
+      customFields.value = [...customFields.value, { key, ...field }];
     }
   };
 
   const updateCustomField = (key: string, field: Partial<CustomFieldConfig>) => {
-    const index = customFields.value.findIndex(f => f.key === key);
-    if (index !== -1) {
-      customFields.value[index] = { ...customFields.value[index], ...field };
-    }
+    customFields.value = customFields.value.map(f =>
+      f.key === key ? { ...f, ...field } : f,
+    );
   };
 
   const removeCustomField = (key: string) => {
-    const index = customFields.value.findIndex(f => f.key === key);
-    if (index !== -1) customFields.value.splice(index, 1);
+    customFields.value = customFields.value.filter(f => f.key !== key);
   };
 
   /**
    * 导入库存。无万里牛对接时，建议每周「全量替换」一次。
-   * 导入前自动快照，便于回滚与周对比。
+   * 导入前自动快照；整表批量写入，避免逐行响应式卡死。
    */
   const importStocks = (
     data: ImportWarehouseStockData[],
@@ -137,14 +144,16 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     const week = weekStart || weekStartSaturday();
 
     if (stocks.value.length > 0) {
-      snapshotStore.createSnapshot(
-        stocks.value,
-        description || `${replaceAll ? '全量替换' : '增量导入'}前自动备份 · ${week}`,
-        week,
-      );
+      try {
+        snapshotStore.createSnapshot(
+          stocks.value,
+          description || `${replaceAll ? '全量替换' : '增量导入'}前自动备份 · ${week}`,
+          week,
+        );
+      } catch (e) {
+        console.warn('导入前快照失败（可能空间不足），继续导入', e);
+      }
     }
-
-    if (replaceAll) stocks.value = [];
 
     const knownFields = [
       'warehouseCode',
@@ -154,15 +163,43 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
       'stock',
       'inTransitStock',
     ];
+
+    // 仓库查找表：O(1)
+    const norm = (s: string) => String(s || '').trim().toLowerCase();
+    const whByCode = new Map<string, (typeof warehouseStore.warehouses)[0]>();
+    const whByName = new Map<string, (typeof warehouseStore.warehouses)[0]>();
+    for (const w of warehouseStore.warehouses) {
+      const c = norm(w.code);
+      const n = norm(w.name);
+      if (c && !whByCode.has(c)) whByCode.set(c, w);
+      if (n && !whByName.has(n)) whByName.set(n, w);
+    }
+    const resolveWh = (code?: string, name?: string) => {
+      const a = norm(code || '');
+      const b = norm(name || '');
+      if (a) return whByCode.get(a) || whByName.get(a);
+      if (b) return whByCode.get(b) || whByName.get(b);
+      return undefined;
+    };
+
+    // 增量：以现有为底；全量：空表
+    const byKey = new Map<string, WarehouseStock>();
+    if (!replaceAll) {
+      for (const s of stocks.value) {
+        byKey.set(stockKey(s.warehouseId, s.productCode), { ...s });
+      }
+    }
+
+    let nextCustom = [...customFields.value];
     if (data.length > 0) {
       const firstItem = data[0];
       for (const key in firstItem) {
-        if (!knownFields.includes(key) && !customFields.value.find(f => f.key === key)) {
+        if (!knownFields.includes(key) && !nextCustom.find(f => f.key === key)) {
           const value = firstItem[key];
           let type: 'text' | 'number' | 'date' = 'text';
           if (typeof value === 'number') type = 'number';
           else if (typeof value === 'string' && !isNaN(Date.parse(value))) type = 'date';
-          customFields.value.push({ key, label: key, type });
+          nextCustom.push({ key, label: key, type });
         }
       }
     }
@@ -171,33 +208,58 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     let skippedWarehouse = 0;
     let skippedNoCode = 0;
     let negativeRows = 0;
-    data.forEach(item => {
+    let idSeq = Date.now();
+
+    for (const item of data) {
       const whKey = String(item.warehouseCode || item.warehouseName || '').trim();
-      if (!whKey || !item.productCode) {
+      const productCode = String(item.productCode || '').trim();
+      if (!whKey || !productCode) {
         skippedNoCode += 1;
-        return;
+        continue;
       }
-      const warehouse = warehouseStore.resolveWarehouse(item.warehouseCode, item.warehouseName);
+      const warehouse = resolveWh(item.warehouseCode, item.warehouseName);
       if (!warehouse) {
         skippedWarehouse += 1;
-        return;
+        continue;
       }
       const stock = Number(item.stock) || 0;
       const inTransit = Number(item.inTransitStock) || 0;
       if (stock < 0 || inTransit < 0) negativeRows += 1;
+
       const customFieldsData: Record<string, any> = {};
       for (const key in item) {
         if (!knownFields.includes(key)) customFieldsData[key] = item[key];
       }
-      upsertStock(
-        warehouse.id,
-        item.productCode,
-        stock,
-        inTransit,
-        Object.keys(customFieldsData).length > 0 ? customFieldsData : undefined,
-      );
+      const hasCustom = Object.keys(customFieldsData).length > 0;
+      const key = stockKey(warehouse.id, productCode);
+      const prev = byKey.get(key);
+      if (prev) {
+        byKey.set(key, {
+          ...prev,
+          stock,
+          inTransitStock: inTransit,
+          customFields: hasCustom ? customFieldsData : prev.customFields,
+        });
+      } else {
+        idSeq += 1;
+        byKey.set(key, {
+          id: `${idSeq}_${imported}`,
+          warehouseId: warehouse.id,
+          productCode,
+          stock,
+          inTransitStock: inTransit,
+          customFields: hasCustom ? customFieldsData : undefined,
+        });
+      }
       imported += 1;
-    });
+    }
+
+    // 一次写入：只触发一次响应式 + 一次 persist
+    stocks.value = Array.from(byKey.values());
+    if (nextCustom.length !== customFields.value.length) {
+      customFields.value = nextCustom;
+    }
+
     return { imported, skippedWarehouse, skippedNoCode, negativeRows, total: data.length };
   };
 
