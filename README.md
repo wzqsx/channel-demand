@@ -3,7 +3,10 @@
 临时前端记账工具（单人使用）：渠道要货、库存导入、销货核对、缺货与预警（按公司主体隔离）。
 
 - 技术栈：Vue 3 · TypeScript · Vite · Pinia · Element Plus
-- 数据：保存在本机浏览器 `localStorage`（**无后端**；换电脑不会自动同步）
+- 数据：主数据在浏览器 `localStorage`；**库存**优先写入本机 **SQLite**（`data/stock.db`），服务未启动时回退 IndexedDB
+- 启动：`npm run dev`（同时开 SQLite 服务 :8787 + 前端）
+- 仅前端：`npm run dev:web`；仅库存库：`npm run server`
+- 备份库存：复制 `data/stock.db`（及同目录 `-wal`/`-shm` 若存在）即可
 
 ---
 

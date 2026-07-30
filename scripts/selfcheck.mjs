@@ -298,6 +298,7 @@ async function main() {
     ir2.backupRowCount === afterFirst,
     `backup=${ir2.backupRowCount} stocks=${afterFirst}`,
   );
+  ok('未启服务时走 idb 兜底', ir2.backend === 'idb', `backend=${ir2.backend}`);
   await stockStore.restoreFromPreImportBackup();
   ok('可从安全备份恢复', stockStore.stocks.length === afterFirst, `len=${stockStore.stocks.length}`);
 

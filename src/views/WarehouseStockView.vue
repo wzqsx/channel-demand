@@ -41,7 +41,6 @@ import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyF
 import { formatCompanyLabel } from '../utils/companyDisplay';
 import { useTableColumnPrefs, type ColumnMeta } from '../composables/useTableColumnPrefs';
 import { getBottleEquivalentStock, resolveToBottleBase } from '../utils/packStock';
-import { hasPreImportBackup } from '../utils/stockPersist';
 
 const router = useRouter();
 const stockStore = useWarehouseStockStore();
@@ -76,7 +75,7 @@ const canRestoreBackup = ref(false);
 
 const refreshBackupFlag = async () => {
   try {
-    canRestoreBackup.value = await hasPreImportBackup();
+    canRestoreBackup.value = await stockStore.hasBackup();
   } catch {
     canRestoreBackup.value = false;
   }
@@ -353,9 +352,9 @@ const handleImport = async (event: Event) => {
     const skipPart = skipParts.length ? `，跳过 ${skipParts.join('、')}` : '';
     const snapPart = result.preImportBackedUp
       ? `（已留导入前备份 ${result.backupRowCount.toLocaleString()} 行，可随时恢复）`
-      : result.snapshotSkipped
-        ? '（大数据量未写历史快照，已优先安全备份）'
-        : '';
+      : '';
+    const backendPart =
+      result.backend === 'sqlite' ? ' · 已写入本地 SQLite' : ' · 浏览器备份模式（请启动 npm run server）';
     ElMessage.success(
       (isReplaceMode.value
         ? `全量替换完成（成功 ${result.imported}/${result.total}）`
@@ -363,6 +362,7 @@ const handleImport = async (event: Event) => {
         negPart +
         skipPart +
         snapPart +
+        backendPart +
         ` · ${week}`,
     );
     page.value = 1;
@@ -779,7 +779,7 @@ const handleFieldDelete = (key: string) => {
   <PageShell
     title="库存导入"
     help-title="库存导入说明"
-    help="1. 库存大数据单独存 IndexedDB；列表分页，避免卡死。&#10;2. 导入前自动做「安全备份」；新数据写入成功后才替换界面，失败不会清掉旧数据。更多 → 恢复导入前备份。&#10;3. 本周需求按仓均分；主体汇总缺口以「缺货与预警」为准。"
+    help="1. 库存优先写入本地 SQLite（data/stock.db），复制该文件即可整库备份。请用 npm run dev 同时开库服务。&#10;2. 导入前自动安全备份；失败可「更多 → 恢复导入前备份」。建议每次约一万行分批导入。&#10;3. 列表分页展示；本周需求按仓均分，主体缺口见「缺货与预警」。"
   >
     <template #toolbar>
       <div class="stock-toolbar">

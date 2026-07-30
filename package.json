@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev-all.mjs",
+    "dev:web": "vite",
+    "server": "node server/stock-sqlite.mjs",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
     "selfcheck": "npx vite-node scripts/selfcheck.mjs",
