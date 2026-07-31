@@ -30,22 +30,29 @@ export type StockDbHealth = {
 };
 
 export async function stockDbHealth(): Promise<StockDbHealth | null> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 600);
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 800);
     const data = await request<StockDbHealth>('/api/health', { signal: ctrl.signal });
-    clearTimeout(t);
     return data?.ok ? data : null;
   } catch {
     return null;
+  } finally {
+    clearTimeout(t);
   }
 }
 
 export async function stockDbLoad() {
-  return request<{
-    stocks: import('../types').WarehouseStock[];
-    customFields: import('../types').CustomFieldConfig[];
-  }>('/api/stocks');
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 60000);
+  try {
+    return await request<{
+      stocks: import('../types').WarehouseStock[];
+      customFields: import('../types').CustomFieldConfig[];
+    }>('/api/stocks', { signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 export async function stockDbImport(body: {

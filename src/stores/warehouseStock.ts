@@ -102,43 +102,68 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     customFields.value = nextFields || [];
   };
 
-  /** 启动：优先 SQLite；空库时把 IDB 迁过去一次 */
+  /** 启动：优先 SQLite；空库时把 IDB 迁过去（大表后台迁，不堵界面） */
   const hydrateFromIdb = async () => {
-    const health = await stockDbHealth();
-    if (health?.ok) {
-      useSqlite.value = true;
-      sqliteDbPath.value = health.dbPath || '';
-      try {
-        const data = await stockDbLoad();
-        if ((data.stocks?.length || 0) === 0) {
-          const idb = await loadStockPersist();
-          if (idb?.stocks?.length) {
-            await stockDbReplaceAll(
-              idb.stocks as WarehouseStock[],
-              (idb.customFields as CustomFieldConfig[]) || [],
-            );
-            const again = await stockDbLoad();
-            applyLoaded(again.stocks || [], again.customFields || []);
+    try {
+      const health = await stockDbHealth();
+      if (health?.ok) {
+        useSqlite.value = true;
+        sqliteDbPath.value = health.dbPath || '';
+        try {
+          const data = await stockDbLoad();
+          if ((data.stocks?.length || 0) === 0) {
+            const idb = await loadStockPersist();
+            const idbStocks = (idb?.stocks as WarehouseStock[]) || [];
+            const idbFields = (idb?.customFields as CustomFieldConfig[]) || [];
+            if (idbStocks.length > 0) {
+              // 小表同步迁；大表先用内存/稍后再迁，避免启动假死
+              if (idbStocks.length <= 5000) {
+                await stockDbReplaceAll(idbStocks, idbFields);
+                const again = await stockDbLoad();
+                applyLoaded(again.stocks || [], again.customFields || []);
+              } else {
+                applyLoaded(idbStocks, idbFields);
+                void stockDbReplaceAll(idbStocks, idbFields)
+                  .then(async () => {
+                    const again = await stockDbLoad();
+                    applyLoaded(again.stocks || [], again.customFields || []);
+                    console.info(`[stock] 已将 ${idbStocks.length} 行从浏览器迁入 SQLite`);
+                  })
+                  .catch(e => console.error('大表迁入 SQLite 失败', e));
+              }
+            } else {
+              applyLoaded([], data.customFields || []);
+            }
           } else {
-            applyLoaded([], data.customFields || []);
+            applyLoaded(data.stocks || [], data.customFields || []);
           }
-        } else {
-          applyLoaded(data.stocks || [], data.customFields || []);
+        } catch (e) {
+          console.error('SQLite 读取失败，回退 IndexedDB', e);
+          useSqlite.value = false;
+          const data = await loadStockPersist();
+          if (data) {
+            applyLoaded(
+              data.stocks as WarehouseStock[],
+              data.customFields as CustomFieldConfig[],
+            );
+          }
         }
-      } catch (e) {
-        console.error('SQLite 读取失败，回退 IndexedDB', e);
+      } else {
         useSqlite.value = false;
         const data = await loadStockPersist();
-        if (data) applyLoaded(data.stocks as WarehouseStock[], data.customFields as CustomFieldConfig[]);
+        if (data) {
+          applyLoaded(
+            data.stocks as WarehouseStock[],
+            data.customFields as CustomFieldConfig[],
+          );
+        }
       }
-    } else {
+    } catch (e) {
+      console.error('库存 hydrate 失败', e);
       useSqlite.value = false;
-      const data = await loadStockPersist();
-      if (data) {
-        applyLoaded(data.stocks as WarehouseStock[], data.customFields as CustomFieldConfig[]);
-      }
+    } finally {
+      hydrated.value = true;
     }
-    hydrated.value = true;
   };
 
   watch(stocks, () => scheduleSave(), { deep: false });

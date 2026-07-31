@@ -9,6 +9,8 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:8787',
         changeOrigin: true,
+        timeout: 2000,
+        proxyTimeout: 2000,
       },
     },
   },

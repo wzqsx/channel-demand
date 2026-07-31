@@ -26,20 +26,26 @@ function openDb(): Promise<IDBDatabase> {
 }
 
 export async function idbGet(key: string): Promise<string | null> {
-  try {
-    const db = await openDb();
-    return await new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, 'readonly');
-      const req = tx.objectStore(STORE).get(key);
-      req.onsuccess = () => {
-        const v = req.result;
-        resolve(typeof v === 'string' ? v : v == null ? null : String(v));
-      };
-      req.onerror = () => reject(req.error);
-    });
-  } catch {
-    return memory.has(key) ? memory.get(key)! : null;
-  }
+  const work = async () => {
+    try {
+      const db = await openDb();
+      return await new Promise<string | null>((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readonly');
+        const req = tx.objectStore(STORE).get(key);
+        req.onsuccess = () => {
+          const v = req.result;
+          resolve(typeof v === 'string' ? v : v == null ? null : String(v));
+        };
+        req.onerror = () => reject(req.error);
+      });
+    } catch {
+      return memory.has(key) ? memory.get(key)! : null;
+    }
+  };
+  return Promise.race([
+    work(),
+    new Promise<string | null>(resolve => setTimeout(() => resolve(memory.get(key) ?? null), 3000)),
+  ]);
 }
 
 export async function idbSet(key: string, value: string): Promise<void> {
