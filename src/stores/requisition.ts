@@ -8,7 +8,7 @@ import type {
 } from '../types';
 import { useChannelStore } from './channel';
 import { useWarehouseStore } from './warehouse';
-import { weekStartSaturday, periodKey, completionRate, type PeriodGrain } from '../utils/week';
+import { weekStartSaturday, weekEnd, periodKey, completionRate, type PeriodGrain } from '../utils/week';
 import { assertRequisitionScope } from '../utils/companyScope';
 
 export interface StockCheckResult {
@@ -31,18 +31,23 @@ function overlaps(a: string[], b: string[]) {
 export const useRequisitionStore = defineStore('requisition', () => {
   const requisitions = ref<Requisition[]>([]);
 
-  /** 兼容旧本地数据：补 companyId / weekStart；保留渠道绑定内的跨主体仓 */
+  /** 兼容旧本地数据：补 companyId / weekStart / weekEnd；保留渠道绑定内的跨主体仓 */
   const migrateLegacy = () => {
     const channelStore = useChannelStore();
     let changed = false;
     requisitions.value.forEach(r => {
-      const anyRow = r as Requisition & { companyId?: string; weekStart?: string };
+      const anyRow = r as Requisition & { companyId?: string; weekStart?: string; weekEnd?: string };
       if (!anyRow.companyId) {
         anyRow.companyId = channelStore.getChannelById(r.channelId)?.companyId || '';
         changed = true;
       }
       if (!anyRow.weekStart) {
         anyRow.weekStart = weekStartSaturday(r.createdAt);
+        changed = true;
+      }
+      const expectedEnd = weekEnd(anyRow.weekStart);
+      if (!anyRow.weekEnd || anyRow.weekEnd !== expectedEnd) {
+        anyRow.weekEnd = expectedEnd;
         changed = true;
       }
       // 仅清理无效仓 ID；不再按主体过滤（多主体发货合法）
@@ -78,12 +83,14 @@ export const useRequisitionStore = defineStore('requisition', () => {
       remark: item.remark,
     }));
 
+    const start = weekStartSaturday(weekStart || new Date());
     const newRequisition: Requisition = {
       id: 'RQ' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
       companyId,
       channelId,
       warehouseIds: scope.warehouseIds,
-      weekStart: weekStart || weekStartSaturday(),
+      weekStart: start,
+      weekEnd: weekEnd(start),
       items: requisitionItems,
       status: 'pending',
       createdAt: new Date().toISOString(),
@@ -402,6 +409,8 @@ export const useRequisitionStore = defineStore('requisition', () => {
         rows.push({
           单号: r.id,
           周起始: r.weekStart,
+          周结束: r.weekEnd || weekEnd(r.weekStart),
+          要货周期: `${r.weekStart} ~ ${r.weekEnd || weekEnd(r.weekStart)}`,
           主体ID: r.companyId,
           渠道ID: r.channelId,
           状态: r.status,
@@ -427,6 +436,8 @@ export const useRequisitionStore = defineStore('requisition', () => {
         rows.push({
           单号: r.id,
           周起始: r.weekStart,
+          周结束: r.weekEnd || weekEnd(r.weekStart),
+          要货周期: `${r.weekStart} ~ ${r.weekEnd || weekEnd(r.weekStart)}`,
           主体ID: r.companyId,
           渠道ID: r.channelId,
           商品编码: c.productCode,

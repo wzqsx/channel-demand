@@ -23,7 +23,7 @@ import { useProductStore } from '../stores/product';
 import { useCompanyStore } from '../stores/company';
 import { bootstrapStores } from '../stores/bootstrap';
 import type { Requisition, ImportRequisitionData } from '../types';
-import { weekStartSaturday, weekLabel, isFutureWeek, currentWeekStart } from '../utils/week';
+import { weekLabel, weekEnd, isFutureWeek, currentWeekStart, toDateKey } from '../utils/week';
 import { exportRows, downloadTemplate, readExcelFromEvent, cell, cellNum } from '../utils/excel';
 import { assertRequisitionScope, getChannelAllowedWarehouses } from '../utils/companyScope';
 import { getBottleEquivalentStock } from '../utils/packStock';
@@ -38,11 +38,11 @@ const warehouseStore = useWarehouseStore();
 const productStore = useProductStore();
 const companyStore = useCompanyStore();
 
-const filterWeek = ref(weekStartSaturday());
+const filterWeek = ref(toDateKey());
 const filterCompanyIds = useRememberedCompanyFilter('requisitions');
 
 const form = ref({
-  weekStart: weekStartSaturday(),
+  weekStart: toDateKey(),
 });
 
 const importDialogVisible = ref(false);
@@ -75,26 +75,59 @@ onMounted(() => {
 });
 
 const openDialog = () => {
-  const cur = weekStartSaturday();
-  let w = filterWeek.value || cur;
+  const w = toDateKey(filterWeek.value || new Date());
   form.value = {
-    weekStart: weekStartSaturday(w),
+    weekStart: w,
   };
   importData.value = [];
   stockCheckResults.value = [];
   importDialogVisible.value = true;
 };
 
+const setPeriodStart = (target: 'filter' | 'form', raw?: string | null) => {
+  if (!raw) return;
+  const start = toDateKey(raw);
+  if (target === 'filter') filterWeek.value = start;
+  else form.value.weekStart = start;
+};
+
 const formWeekHint = computed(() => {
   const w = form.value.weekStart;
-  if (!w) return '周五～周四为一周；默认本周，也可提前选下周计划';
+  if (!w) return '自选起始日，结束日自动为第 7 天（共 7 天）';
+  const range = `${weekLabel(w)}（${w} ~ ${weekEnd(w)}）`;
   if (isFutureWeek(w)) {
-    return `${weekLabel(w)} · 尚未到提报日（提前提报下周/后周计划，提交时会确认）`;
+    return `${range} · 尚未到提报日，提交时会确认`;
   }
   if (w < currentWeekStart()) {
-    return `${weekLabel(w)} · 历史周`;
+    return `${range} · 历史周期`;
   }
-  return `${weekLabel(w)} · 本周`;
+  if (w === currentWeekStart()) {
+    return `${range} · 从今天起算`;
+  }
+  return range;
+});
+
+/** 日期范围选择器绑定：改起始则结束固定为 +6 天 */
+const formPeriodRange = computed({
+  get: (): [string, string] | null => {
+    const s = form.value.weekStart;
+    if (!s) return null;
+    return [s, weekEnd(s)];
+  },
+  set: (v: [string, string] | null) => {
+    if (v?.[0]) form.value.weekStart = toDateKey(v[0]);
+  },
+});
+
+const filterPeriodRange = computed({
+  get: (): [string, string] | null => {
+    const s = filterWeek.value;
+    if (!s) return null;
+    return [s, weekEnd(s)];
+  },
+  set: (v: [string, string] | null) => {
+    if (v?.[0]) filterWeek.value = toDateKey(v[0]);
+  },
 });
 
 const goChannelManage = () => {
@@ -315,7 +348,9 @@ const exportList = () => {
   }
   const mapped = rows.map(r => ({
     单号: r['单号'],
+    要货周期: r['要货周期'] || weekLabel(r['周起始']),
     周起始: r['周起始'],
+    周结束: r['周结束'] || weekEnd(r['周起始']),
     主体: getCompanyName(r['主体ID']),
     渠道: getChannelName(r['渠道ID']),
     状态: r['状态'],
@@ -494,7 +529,7 @@ const handleSubmit = async () => {
   if (isFutureWeek(form.value.weekStart)) {
     try {
       await ElMessageBox.confirm(
-        `当前要货周期「${weekLabel(form.value.weekStart)}」尚未到提报日期。\n本周为「${weekLabel(currentWeekStart())}」。\n\n确认要提前提报该周计划吗？`,
+        `当前要货周期「${weekLabel(form.value.weekStart)}」尚未到提报日期（起始日晚于今天）。\n今天起默认周期为「${weekLabel(currentWeekStart())}」。\n\n确认要提前提报该周期计划吗？`,
         '未到提报日期',
         {
           type: 'warning',
@@ -627,13 +662,16 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
   >
     <template #toolbar>
       <ElDatePicker
-        v-model="filterWeek"
-        type="date"
+        v-model="filterPeriodRange"
+        type="daterange"
         value-format="YYYY-MM-DD"
-        placeholder="要货周期"
+        start-placeholder="起始日"
+        end-placeholder="结束日"
         size="small"
-        style="width: 150px"
-        @change="(v: string) => { if (v) filterWeek = weekStartSaturday(v) }"
+        style="width: 260px"
+        :clearable="false"
+        :editable="false"
+        @change="(v: [string, string] | null) => { if (v?.[0]) setPeriodStart('filter', v[0]) }"
       />
       <MultiCheckFilter
         v-model="filterCompanyIds"
@@ -647,8 +685,8 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
       <ElButton size="small" @click="downloadDemandTemplate">要货模板</ElButton>
       <span class="week-label">
         要货周期：{{ weekLabel(filterWeek) }}
-        <template v-if="isFutureWeek(filterWeek)">（提前周）</template>
-        · 周五～周四
+        <template v-if="isFutureWeek(filterWeek)">（提前）</template>
+        · 自选起始日，共 7 天
       </span>
     </template>
 
@@ -753,16 +791,22 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
           <ElFormItem label="要货周期" required class="form-cell form-cell--full">
             <div class="week-pick">
               <ElDatePicker
-                v-model="form.weekStart"
-                type="date"
+                v-model="formPeriodRange"
+                type="daterange"
                 value-format="YYYY-MM-DD"
-                class="req-control"
-                placeholder="默认本周，可选未来周"
-                @change="(v: string) => { if (v) form.weekStart = weekStartSaturday(v) }"
+                start-placeholder="起始日"
+                end-placeholder="结束日"
+                class="req-control req-control--range"
+                :clearable="false"
+                :editable="false"
+                @change="(v: [string, string] | null) => { if (v?.[0]) setPeriodStart('form', v[0]) }"
               />
               <span class="week-pick__label" :class="{ 'is-future': isFutureWeek(form.weekStart) }">
                 {{ formWeekHint }}
               </span>
+            </div>
+            <div class="form-empty-hint" style="margin-top: 4px">
+              点选任意起始日即可；结束日自动为起始日后第 6 天（共 7 天）。例：选 7月30日 → 7月30日 — 8月5日。
             </div>
           </ElFormItem>
           <ElFormItem class="form-cell form-cell--full">
@@ -1028,6 +1072,11 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
+}
+
+.req-form :deep(.req-control--range.el-date-editor) {
+  width: min(340px, 100%) !important;
+  max-width: 100%;
 }
 
 .req-form :deep(.wh-box) {

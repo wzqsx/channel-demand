@@ -36,7 +36,7 @@ async function main() {
     assertRequisitionScope,
     getChannelAllowedWarehouses,
   } = await import('../src/utils/companyScope.ts');
-  const { completionRate, weekStartSaturday, weekLabel, weekEnd, isFutureWeek, currentWeekStart } =
+  const { completionRate, weekStartSaturday, weekLabel, weekEnd, isFutureWeek, currentWeekStart, toDateKey } =
     await import('../src/utils/week.ts');
   const { buildShortageAndWarnings } = await import('../src/utils/shortageAlert.ts');
 
@@ -156,26 +156,25 @@ async function main() {
   ok('要货为 0 且无销货 → 0', completionRate(0, 0) === 0);
   ok('销货超出可 >100', completionRate(120, 100) === 120);
 
-  console.log('\n[5b] 要货周期 = 周五～下周四，可选未来周（提交时确认）');
+  console.log('\n[5b] 要货周期 = 自选起始日 + 6 天（共 7 天）');
   {
-    const sample = weekStartSaturday('2026-07-31');
-    ok('2026-07-31 → 周起始周五', sample === '2026-07-31', `got=${sample}`);
-    ok('周结束下周四', weekEnd(sample) === '2026-08-06', `end=${weekEnd(sample)}`);
+    const sample = toDateKey('2026-07-30');
+    ok('2026-07-30 起始不强制对齐周几', sample === '2026-07-30', `got=${sample}`);
+    ok('结束日 = 起始 + 6', weekEnd(sample) === '2026-08-05', `end=${weekEnd(sample)}`);
     ok(
-      '展示 7月31日—8月6日',
-      weekLabel(sample) === '7月31日—8月6日',
+      '展示 7月30日 — 8月5日',
+      weekLabel(sample) === '7月30日 — 8月5日',
       `label=${weekLabel(sample)}`,
     );
-    const nextFri = weekStartSaturday('2026-08-07');
-    ok('下周 8月7日—8月13日', weekLabel(nextFri) === '8月7日—8月13日', `label=${weekLabel(nextFri)}`);
+    ok('兼容入口 weekStartSaturday 等同 toDateKey', weekStartSaturday('2026-08-07') === '2026-08-07');
     const todayStart = currentWeekStart();
-    ok('本周不是未来周', !isFutureWeek(todayStart));
+    ok('今天不是未来周期', !isFutureWeek(todayStart));
     const future = new Date(todayStart + 'T12:00:00');
     future.setDate(future.getDate() + 7);
-    ok('下一周识别为未来周', isFutureWeek(weekStartSaturday(future)));
+    ok('未来起始日识别为提前周期', isFutureWeek(toDateKey(future)));
     const past = new Date(todayStart + 'T12:00:00');
     past.setDate(past.getDate() - 7);
-    ok('上一周不是未来周', !isFutureWeek(weekStartSaturday(past)));
+    ok('过去起始日不是未来周期', !isFutureWeek(toDateKey(past)));
   }
 
   console.log('\n[6] 库存可用量按所选仓库');

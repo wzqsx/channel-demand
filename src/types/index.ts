@@ -67,8 +67,10 @@ export interface Requisition {
   companyId: string;
   channelId: string;
   warehouseIds: string[];
-  /** 周起始（周五 YYYY-MM-DD；周五～下周四为一个提报周） */
+  /** 周期起始日 YYYY-MM-DD（自选；结束日 = 起始 + 6 天） */
   weekStart: string;
+  /** 周期结束日 YYYY-MM-DD（冗余存储，便于导出/归档；缺省时按 weekStart+6 推算） */
+  weekEnd?: string;
   items: RequisitionItem[];
   status: 'pending' | 'approved' | 'rejected';
   createdAt: string;
