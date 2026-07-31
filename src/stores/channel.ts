@@ -9,6 +9,10 @@ const clampPriority = (n: number | undefined) => {
   return Math.min(20, Math.round(v));
 };
 
+function newChannelId() {
+  return `CH_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
 /** 解析渠道关联的全部主体（兼容旧数据仅有 companyId） */
 export function getChannelCompanyIds(ch: Pick<Channel, 'companyId' | 'companyIds' | 'warehouseIds'>): string[] {
   const whStore = useWarehouseStore();
@@ -159,7 +163,7 @@ export const useChannelStore = defineStore('channel', () => {
       companyIds: derived.companyIds,
       companyId: derived.companyId,
       code,
-      id: Date.now().toString(),
+      id: newChannelId(),
       priority: clampPriority(channel.priority),
       enabled: channel.enabled !== false,
     });

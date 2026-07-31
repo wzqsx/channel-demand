@@ -92,6 +92,14 @@ export interface ImportRequisitionData {
   productName: string;
   quantity: number;
   remark: string;
+  /** 导入解析后写入：按行匹配到的主体/渠道/仓库（提交时按此开单，不看顶部选择） */
+  resolvedCompanyId?: string;
+  resolvedChannelId?: string;
+  resolvedWarehouseIds?: string[];
+  resolvedCompanyLabel?: string;
+  resolvedChannelLabel?: string;
+  resolvedWarehouseLabel?: string;
+  resolveError?: string;
 }
 
 export interface WarehouseStock {

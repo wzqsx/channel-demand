@@ -79,7 +79,7 @@ export const useRequisitionStore = defineStore('requisition', () => {
     }));
 
     const newRequisition: Requisition = {
-      id: 'RQ' + Date.now().toString(),
+      id: 'RQ' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
       companyId,
       channelId,
       warehouseIds: scope.warehouseIds,

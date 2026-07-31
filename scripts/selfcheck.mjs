@@ -319,6 +319,53 @@ async function main() {
       !!coByName && !!chByName && chByName.id === sampleCh.id,
       `co=${coByName?.code} ch=${chByName?.code}`,
     );
+
+    // 多渠道批量：现场建两个渠道，验证可分别开单
+    const coId = sampleCo.id;
+    const whForCo = whStore.warehouses.find(w => w.companyId === coId) || whStore.warehouses[0];
+    if (whForCo) {
+      const codeA = `SC-MCA-${Date.now().toString(36)}`;
+      const codeB = `SC-MCB-${Date.now().toString(36)}`;
+      chStore.addChannel({
+        code: codeA,
+        name: '自检多渠A',
+        companyId: coId,
+        companyIds: [coId],
+        warehouseIds: [whForCo.id],
+        priority: 3,
+        enabled: true,
+      });
+      chStore.addChannel({
+        code: codeB,
+        name: '自检多渠B',
+        companyId: coId,
+        companyIds: [coId],
+        warehouseIds: [whForCo.id],
+        priority: 4,
+        enabled: true,
+      });
+      const a = chStore.resolveChannel(codeA);
+      const b = chStore.resolveChannel(codeB);
+      ok('多渠道样本已创建', !!a && !!b);
+      if (a && b) {
+        const before = req.requisitions.length;
+        req.addRequisition(coId, a.id, [whForCo.id], [
+          { productCode: samplePr.code, productName: samplePr.name, quantity: 1, remark: 'sc-a' },
+        ], week);
+        req.addRequisition(coId, b.id, [whForCo.id], [
+          { productCode: samplePr.code, productName: samplePr.name, quantity: 2, remark: 'sc-b' },
+        ], week);
+        ok('多渠道各开一张要货单', req.requisitions.length === before + 2);
+        const lastTwo = req.requisitions.slice(0, 2);
+        ok(
+          '两张单渠道不同',
+          new Set(lastTwo.map(r => r.channelId)).size === 2,
+          `ids=${lastTwo.map(r => r.channelId).join(',')}`,
+        );
+      }
+    } else {
+      ok('多渠道样本仓可用', false, '无仓库');
+    }
   }
 
   console.log('\n[10] 要货 migrate 保留跨主体仓');

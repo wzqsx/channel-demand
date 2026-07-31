@@ -8,8 +8,6 @@ import {
   ElDialog,
   ElForm,
   ElFormItem,
-  ElSelect,
-  ElOption,
   ElMessage,
   ElTag,
   ElMessageBox,
@@ -44,9 +42,6 @@ const filterWeek = ref(weekStartSaturday());
 const filterCompanyIds = useRememberedCompanyFilter('requisitions');
 
 const form = ref({
-  companyId: '',
-  channelId: '',
-  warehouseIds: [] as string[],
   weekStart: weekStartSaturday(),
 });
 
@@ -55,6 +50,7 @@ const importData = ref<ImportRequisitionData[]>([]);
 const stockCheckResults = ref<{
   productCode: string;
   productName: string;
+  channelLabel: string;
   demandQuantity: number;
   availableStock: number;
   packStock: number;
@@ -65,89 +61,6 @@ const stockCheckResults = ref<{
 
 const detailVisible = ref(false);
 const detailRow = ref<Requisition | null>(null);
-
-const filteredChannels = computed(() => {
-  if (!form.value.companyId) return [];
-  return channelStore.getChannelsSortedByPriority(form.value.companyId);
-});
-
-const noChannelHint = computed(() => {
-  if (!form.value.companyId) return '请先选择主体';
-  if (filteredChannels.value.length) return '';
-  const all = channelStore.channels.filter(c => c.enabled !== false).length;
-  if (!all) return '尚未维护渠道，请先到「渠道管理」新增或导入';
-  return '该主体下没有关联渠道（渠道未绑此主体，或主体 id 未同步）。请到「渠道管理」编辑渠道勾选该主体，或重新导入渠道。';
-});
-
-const selectedChannel = computed(() =>
-  form.value.channelId ? channelStore.getChannelById(form.value.channelId) : undefined,
-);
-
-/**
- * 渠道全部绑定仓均可选（支持多主体发货）。
- */
-const filteredWarehouses = computed(() => {
-  if (!form.value.channelId) return [];
-  if (!selectedChannel.value) return [];
-  return getChannelAllowedWarehouses(form.value.channelId);
-});
-
-type WhListRow = {
-  id: string;
-  name: string;
-  code: string;
-  companyId: string;
-  companyName: string;
-};
-
-/** 展示用：全部绑定仓，并标注所属主体 */
-const channelWarehouseRows = computed((): WhListRow[] => {
-  return filteredWarehouses.value.map(w => {
-    const c = companyStore.getCompanyById(w.companyId);
-    return {
-      id: w.id,
-      name: w.name,
-      code: w.code,
-      companyId: w.companyId,
-      companyName: c ? formatCompanyNameOnly(c) : w.companyId,
-    };
-  });
-});
-
-const multiCompanyBound = computed(() => {
-  const ids = new Set(channelWarehouseRows.value.map(r => r.companyId));
-  return ids.size > 1;
-});
-
-/** 渠道绑定仓总数（下拉文案） */
-const channelBoundWhCount = (channelId: string) =>
-  getChannelAllowedWarehouses(channelId).length;
-
-const channelOptionLabel = (ch: { id: string; name: string; priority: number; warehouseIds?: string[] }) => {
-  const total = channelBoundWhCount(ch.id);
-  return `${ch.name}（P${ch.priority} · 绑定${total}仓）`;
-};
-
-const channelWarehouseHint = computed(() => {
-  const ch = selectedChannel.value;
-  if (!ch) return '请先选择渠道；选中后将自动勾选该渠道已绑定的全部仓库';
-  const total = channelWarehouseRows.value.length;
-  if (!total) {
-    return `渠道「${ch.name}」尚未绑定仓库，请先到「渠道管理」勾选`;
-  }
-  if (multiCompanyBound.value) {
-    return `已自动勾选渠道「${ch.name}」绑定的全部 ${total} 个仓库（含多主体仓，可按需取消）`;
-  }
-  return `已按渠道「${ch.name}」自动勾选绑定仓库（共 ${total} 个，可按需取消）`;
-});
-
-const selectAllBoundWarehouses = () => {
-  form.value.warehouseIds = filteredWarehouses.value.map(w => w.id);
-};
-
-const selectedSelectableCount = computed(
-  () => form.value.warehouseIds.filter(id => filteredWarehouses.value.some(w => w.id === id)).length,
-);
 
 const listRows = computed(() => {
   return requisitionStore.requisitions.filter(r => {
@@ -163,39 +76,12 @@ onMounted(() => {
 
 const openDialog = () => {
   form.value = {
-    companyId: filterCompanyIds.value.length === 1 ? filterCompanyIds.value[0] : '',
-    channelId: '',
-    warehouseIds: [],
     weekStart: filterWeek.value || weekStartSaturday(),
   };
   importData.value = [];
   stockCheckResults.value = [];
   importDialogVisible.value = true;
 };
-
-const handleCompanyChange = () => {
-  form.value.channelId = '';
-  form.value.warehouseIds = [];
-};
-
-const handleChannelChange = () => {
-  // 自动勾选渠道已绑定的全部仓库（可含多主体仓，可按需取消）
-  selectAllBoundWarehouses();
-};
-
-const clearWarehouses = () => {
-  form.value.warehouseIds = [];
-};
-
-const toggleWarehouse = (id: string) => {
-  if (!id) return;
-  // 禁止勾选渠道外仓库
-  if (!filteredWarehouses.value.some(w => w.id === id)) return;
-  const cur = form.value.warehouseIds;
-  form.value.warehouseIds = cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id];
-};
-
-const isWarehouseChecked = (id: string) => form.value.warehouseIds.includes(id);
 
 const goChannelManage = () => {
   importDialogVisible.value = false;
@@ -294,45 +180,100 @@ const resolveWarehouseIdsFromRow = (row: ImportRequisitionData, channelId: strin
   return ids.length ? ids : allowed.map(w => w.id);
 };
 
-/** 导入后：用 Excel 里的渠道自动带出主体/渠道/仓库 */
-const applyImportHeaderFromRows = (rows: ImportRequisitionData[]) => {
-  const withChannel = rows.find(r => r.channelCode || r.channelName);
-  const withCompany = rows.find(r => r.companyCode || r.companyName);
-  if (!withChannel) {
-    ElMessage.warning('Excel 未识别到渠道编码/名称，请在上方手工选择渠道，或使用新模板');
-    return;
+/** 按 Excel 行解析主体/渠道/仓库；不依赖顶部选择 */
+const enrichImportRows = (rows: ImportRequisitionData[]): ImportRequisitionData[] =>
+  rows.map(row => {
+    const tip = [row.channelCode, row.channelName].filter(Boolean).join('/') || '（空）';
+    if (!row.channelCode && !row.channelName) {
+      return { ...row, resolveError: '缺少渠道编码/名称' };
+    }
+    let companyId = resolveCompanyIdFromRow(row);
+    const ch = resolveChannelFromRow(row, companyId || undefined);
+    if (!ch) {
+      return { ...row, resolveError: `找不到渠道：${tip}` };
+    }
+    if (!companyId) companyId = resolveCompanyIdFromRow(row, ch.id);
+    if (!companyId) {
+      return {
+        ...row,
+        resolvedChannelId: ch.id,
+        resolvedChannelLabel: `${ch.name}（P${ch.priority}）`,
+        resolveError: '无法确定主体（请填主体编码/名称，或先在渠道上绑定主体）',
+      };
+    }
+    const warehouseIds = resolveWarehouseIdsFromRow(row, ch.id);
+    if (!warehouseIds.length) {
+      return {
+        ...row,
+        resolvedCompanyId: companyId,
+        resolvedChannelId: ch.id,
+        resolvedCompanyLabel: (() => {
+          const c = companyStore.getCompanyById(companyId);
+          return c ? formatCompanyNameOnly(c) : companyId;
+        })(),
+        resolvedChannelLabel: `${ch.name}（P${ch.priority}）`,
+        resolveError: `渠道「${ch.name}」未绑定仓库`,
+      };
+    }
+    const scope = assertRequisitionScope({ companyId, channelId: ch.id, warehouseIds });
+    if (!scope.ok) {
+      return {
+        ...row,
+        resolvedCompanyId: companyId,
+        resolvedChannelId: ch.id,
+        resolvedWarehouseIds: warehouseIds,
+        resolvedCompanyLabel: (() => {
+          const c = companyStore.getCompanyById(companyId);
+          return c ? formatCompanyNameOnly(c) : companyId;
+        })(),
+        resolvedChannelLabel: `${ch.name}（P${ch.priority}）`,
+        resolveError: scope.message,
+      };
+    }
+    const co = companyStore.getCompanyById(companyId);
+    return {
+      ...row,
+      resolvedCompanyId: companyId,
+      resolvedChannelId: ch.id,
+      resolvedWarehouseIds: scope.warehouseIds,
+      resolvedCompanyLabel: co ? formatCompanyNameOnly(co) : companyId,
+      resolvedChannelLabel: `${ch.name}（P${ch.priority}）`,
+      resolvedWarehouseLabel: scope.warehouseIds
+        .map(id => warehouseStore.getWarehouseById(id)?.name || id)
+        .join('、'),
+      resolveError: undefined,
+    };
+  });
+
+const importOkRows = computed(() => importData.value.filter(r => !r.resolveError));
+const importBadRows = computed(() => importData.value.filter(r => !!r.resolveError));
+const importChannelSummary = computed(() => {
+  const m = new Map<string, number>();
+  for (const r of importOkRows.value) {
+    const key = r.resolvedChannelLabel || r.resolvedChannelId || '—';
+    m.set(key, (m.get(key) || 0) + 1);
   }
-  let companyId = resolveCompanyIdFromRow(withCompany || withChannel);
-  const ch = resolveChannelFromRow(withChannel, companyId || undefined);
-  if (!ch) {
-    ElMessage.error(
-      `找不到渠道：${withChannel.channelCode || withChannel.channelName || ''}，请检查编码/名称或先到渠道管理维护`,
-    );
-    return;
-  }
-  if (!companyId) companyId = resolveCompanyIdFromRow(withChannel, ch.id);
-  if (!companyId) {
-    ElMessage.error('无法确定主体，请填写主体编码或名称，或先在渠道上绑定主体');
-    return;
-  }
-  form.value.companyId = companyId;
-  form.value.channelId = ch.id;
-  form.value.warehouseIds = resolveWarehouseIdsFromRow(withChannel, ch.id);
-  if (!form.value.warehouseIds.length) {
-    ElMessage.warning(`渠道「${ch.name}」未绑定仓库，请到渠道管理勾选`);
-  }
-};
+  return [...m.entries()].map(([label, n]) => `${label}×${n}`).join('；');
+});
 
 const handleImport = async (event: Event) => {
   const rows = await readExcelFromEvent(event);
-  importData.value = parseExcelRows(rows);
+  const parsed = parseExcelRows(rows);
   stockCheckResults.value = [];
-  if (!importData.value.length) {
+  if (!parsed.length) {
+    importData.value = [];
     ElMessage.warning('未解析到有效要货行（商品编码或名称填一个即可，需能匹配商品档案）');
     return;
   }
-  applyImportHeaderFromRows(importData.value);
-  ElMessage.success(`已导入 ${importData.value.length} 行要货`);
+  importData.value = enrichImportRows(parsed);
+  const bad = importBadRows.value.length;
+  const ok = importOkRows.value.length;
+  const channels = new Set(importOkRows.value.map(r => r.resolvedChannelId).filter(Boolean)).size;
+  if (bad) {
+    ElMessage.warning(`已导入 ${ok + bad} 行：成功匹配 ${ok} 行（${channels} 个渠道），${bad} 行待修正`);
+  } else {
+    ElMessage.success(`已导入 ${ok} 行，将按 ${channels} 个渠道分别开单`);
+  }
 };
 
 const downloadDemandTemplate = () => {
@@ -378,18 +319,32 @@ const exportList = () => {
 };
 
 const checkStock = () => {
-  if (!form.value.channelId || !form.value.warehouseIds.length) {
-    ElMessage.error('请先选择渠道和仓库');
-    return [];
-  }
-
   const results: typeof stockCheckResults.value = [];
-  importData.value.forEach(item => {
+  for (const item of importData.value) {
+    const channelLabel = item.resolvedChannelLabel || item.channelCode || item.channelName || '—';
+    if (item.resolveError) {
+      results.push({
+        productCode: item.productCode,
+        productName: item.productName,
+        channelLabel,
+        demandQuantity: item.quantity,
+        availableStock: 0,
+        packStock: 0,
+        higherPriorityDemand: 0,
+        status: 'short',
+        message: item.resolveError,
+      });
+      continue;
+    }
+    const companyId = item.resolvedCompanyId!;
+    const channelId = item.resolvedChannelId!;
+    const warehouseIds = item.resolvedWarehouseIds || [];
     const product = productStore.getProductByCode(item.productCode);
     if (!product) {
       results.push({
         productCode: item.productCode,
         productName: item.productName,
+        channelLabel,
         demandQuantity: item.quantity,
         availableStock: 0,
         packStock: 0,
@@ -397,18 +352,17 @@ const checkStock = () => {
         status: 'short',
         message: '商品不存在',
       });
-      return;
+      continue;
     }
 
-    // 瓶规可用 = 瓶规库存 + 箱规库存×换算比例（要货按瓶规口径）
-    const eq = getBottleEquivalentStock(item.productCode, form.value.warehouseIds);
+    const eq = getBottleEquivalentStock(item.productCode, warehouseIds);
     const availableStock = eq.availableStock;
     const packStock = eq.packStock + eq.packInTransit;
     const higherPriorityDemand = requisitionStore.getHigherPriorityPendingDemand(
       eq.baseCode,
-      form.value.channelId,
-      form.value.warehouseIds,
-      form.value.companyId,
+      channelId,
+      warehouseIds,
+      companyId,
     );
     const baseProduct = productStore.getProductByCode(eq.baseCode) || product;
     const checked = requisitionStore.checkStockAvailability(
@@ -422,6 +376,7 @@ const checkStock = () => {
     results.push({
       productCode: eq.baseCode,
       productName: item.productName,
+      channelLabel,
       demandQuantity: item.quantity,
       availableStock,
       packStock,
@@ -429,7 +384,7 @@ const checkStock = () => {
       status: checked.status,
       message: checked.message + packHint,
     });
-  });
+  }
   return results;
 };
 
@@ -441,26 +396,49 @@ const runStockCheck = () => {
   stockCheckResults.value = checkStock();
 };
 
-const handleSubmit = async () => {
-  if (!form.value.companyId) return ElMessage.error('请选择所属主体');
-  if (!form.value.channelId) return ElMessage.error('请选择渠道');
-  // 提交前剔除渠道外仓库，防止脏数据
-  const allowed = new Set(filteredWarehouses.value.map(w => w.id));
-  form.value.warehouseIds = form.value.warehouseIds.filter(id => allowed.has(id));
-  if (!filteredWarehouses.value.length) {
-    return ElMessage.error('该渠道未绑定仓库，请先到「渠道管理」勾选仓库');
+/** 同一主体+渠道+仓库集合 → 一张要货单 */
+const groupImportRowsForSubmit = (rows: ImportRequisitionData[]) => {
+  const groups = new Map<
+    string,
+    {
+      companyId: string;
+      channelId: string;
+      warehouseIds: string[];
+      items: ImportRequisitionData[];
+      label: string;
+    }
+  >();
+  for (const row of rows) {
+    const companyId = row.resolvedCompanyId!;
+    const channelId = row.resolvedChannelId!;
+    const warehouseIds = [...(row.resolvedWarehouseIds || [])].sort();
+    const key = `${companyId}|${channelId}|${warehouseIds.join(',')}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = {
+        companyId,
+        channelId,
+        warehouseIds,
+        items: [],
+        label: `${row.resolvedCompanyLabel || companyId} / ${row.resolvedChannelLabel || channelId}`,
+      };
+      groups.set(key, g);
+    }
+    g.items.push(row);
   }
-  if (!form.value.warehouseIds.length) return ElMessage.error('请从渠道已绑定仓库中选择');
+  return [...groups.values()];
+};
+
+const handleSubmit = async () => {
   if (!form.value.weekStart) return ElMessage.error('请选择周起始');
   if (!importData.value.length) return ElMessage.error('请导入要货数据');
-
-  const scope = assertRequisitionScope({
-    companyId: form.value.companyId,
-    channelId: form.value.channelId,
-    warehouseIds: form.value.warehouseIds,
-  });
-  if (!scope.ok) return ElMessage.error(scope.message);
-  form.value.warehouseIds = scope.warehouseIds;
+  if (importBadRows.value.length) {
+    return ElMessage.error(
+      `还有 ${importBadRows.value.length} 行未能匹配主体/渠道/仓库，请修正 Excel 后重新导入`,
+    );
+  }
+  const groups = groupImportRowsForSubmit(importOkRows.value);
+  if (!groups.length) return ElMessage.error('没有可提交的要货行');
 
   const results = checkStock();
   stockCheckResults.value = results;
@@ -469,8 +447,10 @@ const handleSubmit = async () => {
 
   if (shortItems.length > 0) {
     await ElMessageBox.alert(
-      shortItems.map(r => `${r.productName}: ${r.message}`).join('\n'),
-      '库存检查失败（按所选仓库 + 同主体高优先级占用）',
+      shortItems
+        .map(r => `[${r.channelLabel}] ${r.productName}: ${r.message}`)
+        .join('\n'),
+      '库存检查失败（按各行渠道仓库 + 同主体高优先级占用）',
       { type: 'error' },
     );
     return;
@@ -479,7 +459,9 @@ const handleSubmit = async () => {
   if (lowItems.length > 0) {
     try {
       await ElMessageBox.confirm(
-        lowItems.map(r => `${r.productName}: ${r.message}`).join('\n'),
+        lowItems
+          .map(r => `[${r.channelLabel}] ${r.productName}: ${r.message}`)
+          .join('\n'),
         '库存偏低，是否继续提交？',
         { confirmButtonText: '继续提交', cancelButtonText: '取消', type: 'warning' },
       );
@@ -488,19 +470,23 @@ const handleSubmit = async () => {
     }
   }
 
+  let created = 0;
   try {
-    requisitionStore.addRequisition(
-      form.value.companyId,
-      form.value.channelId,
-      form.value.warehouseIds,
-      importData.value,
-      form.value.weekStart,
-    );
+    for (const g of groups) {
+      requisitionStore.addRequisition(
+        g.companyId,
+        g.channelId,
+        g.warehouseIds,
+        g.items,
+        form.value.weekStart,
+      );
+      created += 1;
+    }
   } catch (e: any) {
     return ElMessage.error(e?.message || '提交失败：主体/仓库不匹配');
   }
   importDialogVisible.value = false;
-  ElMessage.success('要货单已提交');
+  ElMessage.success(`已提交 ${created} 张要货单（共 ${importOkRows.value.length} 行明细）`);
 };
 
 const handleApprove = (id: string) => {
@@ -706,104 +692,9 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
               @change="(v: string) => { if (v) form.weekStart = weekStartSaturday(v) }"
             />
           </ElFormItem>
-          <ElFormItem label="主体" required class="form-cell">
-            <ElSelect
-              v-model="form.companyId"
-              placeholder="所属主体"
-              filterable
-              class="req-control"
-              @change="handleCompanyChange"
-            >
-              <ElOption
-                v-for="c in companyStore.companies"
-                :key="c.id"
-                :label="formatCompanyLabel(c)"
-                :value="c.id"
-              />
-            </ElSelect>
-          </ElFormItem>
-          <ElFormItem label="渠道" required class="form-cell form-cell--full">
-            <ElSelect
-              v-model="form.channelId"
-              placeholder="请选择同公司渠道"
-              filterable
-              class="req-control"
-              :disabled="!form.companyId"
-              @change="handleChannelChange"
-            >
-              <ElOption
-                v-for="ch in filteredChannels"
-                :key="ch.id"
-                :label="channelOptionLabel(ch)"
-                :value="ch.id"
-              />
-            </ElSelect>
-            <div v-if="form.companyId && !filteredChannels.length" class="form-empty-hint">
-              {{ noChannelHint }}
-              <ElButton link type="primary" size="small" @click="goChannelManage">去渠道管理</ElButton>
-            </div>
-          </ElFormItem>
-          <ElFormItem label="仓库" required class="form-cell form-cell--full">
-            <div class="wh-box" :class="{ 'wh-box--locked': !form.channelId }">
-              <div class="wh-box__bar">
-                <div class="wh-box__hint">{{ channelWarehouseHint }}</div>
-                <div class="wh-box__bar-actions">
-                  <ElButton
-                    link
-                    type="primary"
-                    size="small"
-                    :disabled="!filteredWarehouses.length"
-                    @click="selectAllBoundWarehouses"
-                  >
-                    全选绑定仓
-                  </ElButton>
-                  <ElButton
-                    link
-                    size="small"
-                    :disabled="!form.warehouseIds.length"
-                    @click="clearWarehouses"
-                  >
-                    清空
-                  </ElButton>
-                </div>
-              </div>
-              <div v-if="channelWarehouseRows.length" class="wh-box__list">
-                <div
-                  v-for="(w, idx) in channelWarehouseRows"
-                  :key="`${w.code}__${w.id}__${idx}`"
-                  class="wh-box__item"
-                  role="checkbox"
-                  :aria-checked="isWarehouseChecked(w.id)"
-                  tabindex="0"
-                  @click="toggleWarehouse(w.id)"
-                  @keydown.enter.prevent="toggleWarehouse(w.id)"
-                  @keydown.space.prevent="toggleWarehouse(w.id)"
-                >
-                  <span class="wh-box__check" :class="{ on: isWarehouseChecked(w.id) }" />
-                  <span class="wh-box__text">{{ w.name }}（{{ w.code }}）</span>
-                  <ElTag
-                    v-if="multiCompanyBound"
-                    size="small"
-                    type="info"
-                    effect="plain"
-                    class="wh-box__tag"
-                  >
-                    {{ w.companyName }}
-                  </ElTag>
-                </div>
-              </div>
-              <div v-else class="wh-box__empty">
-                <template v-if="!form.companyId || !form.channelId">
-                  请先选择主体和渠道
-                </template>
-                <template v-else>
-                  该渠道在「渠道管理」中未绑定仓库，无法在此勾选。
-                  <ElButton link type="primary" size="small" @click="goChannelManage">去渠道管理绑定</ElButton>
-                </template>
-              </div>
-              <div v-if="channelWarehouseRows.length" class="wh-box__meta">
-                已选 {{ selectedSelectableCount }} / {{ channelWarehouseRows.length }}
-              </div>
+          <ElFormItem class="form-cell form-cell--full">
+            <div class="form-empty-hint" style="margin: 0">
+              无需选手动主体/渠道：导入 Excel 后按每行的渠道自动开单（多渠道会拆成多张要货单）。
             </div>
           </ElFormItem>
         </div>
@@ -818,40 +709,68 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
             <HelpTip
               inline
               title="Excel 列说明"
-              content="列：主体编码/名称、渠道编码/名称、仓库编码或名称(逗号分隔)、商品编码/名称、数量、备注。主体/渠道/商品/仓库：编码或名称填一个即可（写反也能配上）。仓库列可空=自动勾选该渠道全部绑定仓。"
+              content="列：主体编码/名称、渠道编码/名称、仓库编码或名称(逗号分隔)、商品编码/名称、数量、备注。编码或名称填一个即可。提交时按行归属自动拆成多张要货单；仓库列可空=该渠道全部绑定仓。"
             />
             <ElButton size="small" @click="downloadDemandTemplate">下载模板</ElButton>
-            <ElButton size="small" type="primary" :disabled="!importData.length" @click="runStockCheck">验库存</ElButton>
+            <ElButton size="small" type="primary" :disabled="!importOkRows.length" @click="runStockCheck">验库存</ElButton>
             <HelpTip
               inline
               title="验库存说明"
-              content="验库存 = 所选仓库(瓶规库存+在途 + 箱规折算) − 同主体更高优先级、且仓库有交集的「待审批+已通过」要货。停用渠道不参与。箱规需在商品里勾选组合并填写基础瓶规编码与换算比例。"
+              content="按每行匹配到的渠道仓库验库存：瓶规+箱规折算 − 同主体更高优先级占用。停用渠道不参与。"
             />
           </div>
         </div>
-        <ElTable v-if="importData.length" :data="importData" border size="small" max-height="220">
+        <div v-if="importData.length" class="form-empty-hint" style="margin: 0 0 8px">
+          已匹配 {{ importOkRows.length }} 行
+          <template v-if="importChannelSummary">（{{ importChannelSummary }}）</template>
+          <template v-if="importBadRows.length">；{{ importBadRows.length }} 行匹配失败，提交前需修正</template>
+          。
+          <ElButton v-if="importBadRows.length" link type="primary" size="small" @click="goChannelManage">去渠道管理</ElButton>
+        </div>
+        <ElTable v-if="importData.length" :data="importData" border size="small" max-height="280">
           <ElTableColumn type="index" label="序号" width="55" />
-          <ElTableColumn label="渠道" min-width="120" show-overflow-tooltip>
+          <ElTableColumn label="主体" min-width="110" show-overflow-tooltip>
             <template #default="{ row }">
-              {{ row.channelCode || row.channelName || '—' }}
+              {{ row.resolvedCompanyLabel || row.companyCode || row.companyName || '—' }}
             </template>
           </ElTableColumn>
-          <ElTableColumn prop="productCode" label="商品编码" width="120" sortable />
-          <ElTableColumn prop="productName" label="商品名称" min-width="160" sortable />
-          <ElTableColumn prop="quantity" label="数量" width="120" sortable show-overflow-tooltip>
+          <ElTableColumn label="渠道" min-width="130" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ row.resolvedChannelLabel || row.channelCode || row.channelName || '—' }}
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="仓库" min-width="140" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ row.resolvedWarehouseLabel || row.warehouseCodes || '（渠道全部绑定仓）' }}
+            </template>
+          </ElTableColumn>
+          <ElTableColumn prop="productCode" label="商品编码" width="110" sortable />
+          <ElTableColumn prop="productName" label="商品名称" min-width="140" sortable />
+          <ElTableColumn prop="quantity" label="数量" width="110" sortable show-overflow-tooltip>
             <template #default="{ row }">
               {{ formatProductQty(row.quantity, row.productCode) }}
             </template>
           </ElTableColumn>
-          <ElTableColumn prop="remark" label="备注" min-width="120" />
+          <ElTableColumn label="匹配" width="100">
+            <template #default="{ row }">
+              <ElTag v-if="row.resolveError" size="small" type="danger">失败</ElTag>
+              <ElTag v-else size="small" type="success">OK</ElTag>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="说明" min-width="140" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ row.resolveError || row.remark || '' }}
+            </template>
+          </ElTableColumn>
         </ElTable>
-        <div v-else class="empty-tip">请导入要货 Excel</div>
+        <div v-else class="empty-tip">请导入要货 Excel（表内填渠道，系统按行自动分配）</div>
       </div>
 
       <div v-if="stockCheckResults.length" class="import-block">
         <div class="import-block__head"><span>库存检查</span></div>
         <ElTable :data="stockCheckResults" border size="small" max-height="200">
           <ElTableColumn type="index" label="序号" width="55" />
+          <ElTableColumn prop="channelLabel" label="渠道" min-width="120" show-overflow-tooltip />
           <ElTableColumn prop="productCode" label="瓶规编码" width="100" sortable />
           <ElTableColumn prop="productName" label="名称" min-width="120" sortable />
           <ElTableColumn prop="demandQuantity" label="需求" width="110" sortable show-overflow-tooltip>
@@ -887,7 +806,7 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
 
       <template #footer>
         <ElButton size="small" @click="importDialogVisible = false">取消</ElButton>
-        <ElButton size="small" type="primary" @click="handleSubmit">提交</ElButton>
+        <ElButton size="small" type="primary" :disabled="!importOkRows.length" @click="handleSubmit">提交</ElButton>
       </template>
     </ElDialog>
 
