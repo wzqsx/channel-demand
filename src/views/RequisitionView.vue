@@ -394,6 +394,7 @@ const runStockCheck = () => {
     return;
   }
   stockCheckResults.value = checkStock();
+  ElMessage.success('已刷新库存检查（仅供参考，不拦截提交）');
 };
 
 /** 同一主体+渠道+仓库集合 → 一张要货单 */
@@ -429,6 +430,41 @@ const groupImportRowsForSubmit = (rows: ImportRequisitionData[]) => {
   return [...groups.values()];
 };
 
+/** 导入行里尚未建档的商品编码（去重） */
+const missingProductEntries = (rows: ImportRequisitionData[]) => {
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    const code = String(row.productCode || '').trim();
+    if (!code) continue;
+    if (productStore.getProductByCode(code)) continue;
+    if (!map.has(code)) map.set(code, row.productName || code);
+  }
+  return [...map.entries()].map(([code, name]) => ({ code, name }));
+};
+
+const quickAddMissingProducts = (entries: { code: string; name: string }[]) => {
+  for (const { code, name } of entries) {
+    productStore.upsertByCode({
+      code,
+      name: name || code,
+      spec: '',
+      bottleUnit: '瓶',
+      boxUnit: '箱',
+      bottlesPerBox: 24,
+      stock: 0,
+      warningThreshold: 0,
+      isCombined: false,
+      combineProductCode: '',
+      combineRatio: 0,
+    });
+  }
+};
+
+const goProductManage = () => {
+  importDialogVisible.value = false;
+  router.push('/products');
+};
+
 const handleSubmit = async () => {
   if (!form.value.weekStart) return ElMessage.error('请选择周起始');
   if (!importData.value.length) return ElMessage.error('请导入要货数据');
@@ -440,32 +476,28 @@ const handleSubmit = async () => {
   const groups = groupImportRowsForSubmit(importOkRows.value);
   if (!groups.length) return ElMessage.error('没有可提交的要货行');
 
-  const results = checkStock();
-  stockCheckResults.value = results;
-  const shortItems = results.filter(r => r.status === 'short');
-  const lowItems = results.filter(r => r.status === 'low');
-
-  if (shortItems.length > 0) {
-    await ElMessageBox.alert(
-      shortItems
-        .map(r => `[${r.channelLabel}] ${r.productName}: ${r.message}`)
-        .join('\n'),
-      '库存检查失败（按各行渠道仓库 + 同主体高优先级占用）',
-      { type: 'error' },
-    );
-    return;
-  }
-
-  if (lowItems.length > 0) {
+  // 仅校验商品档案：库存不足不拦截提交（验库存按钮仍可手工查看）
+  const missing = missingProductEntries(importOkRows.value);
+  if (missing.length) {
+    const list = missing.map(m => `${m.code}　${m.name}`).join('\n');
     try {
       await ElMessageBox.confirm(
-        lowItems
-          .map(r => `[${r.channelLabel}] ${r.productName}: ${r.message}`)
-          .join('\n'),
-        '库存偏低，是否继续提交？',
-        { confirmButtonText: '继续提交', cancelButtonText: '取消', type: 'warning' },
+        `以下商品编码在「商品管理」中不存在：\n\n${list}\n\n可快速用导入的编码/名称建档后继续提交，或先去商品管理新增。`,
+        '无此商品编码',
+        {
+          type: 'warning',
+          confirmButtonText: '快速新增并提交',
+          cancelButtonText: '去商品管理',
+          distinguishCancelAndClose: true,
+          dangerouslyUseHTMLString: false,
+        },
       );
-    } catch {
+      quickAddMissingProducts(missing);
+      ElMessage.success(`已新增 ${missing.length} 个商品档案`);
+    } catch (action) {
+      if (action === 'cancel') {
+        goProductManage();
+      }
       return;
     }
   }
@@ -560,7 +592,7 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
 <template>
   <PageShell
     title="渠道要货"
-    help="按主体分渠道/仓库 · 同主体内优先级占库存 · 审批后可录入本周实际销货做虚报核对\n库存口径：要货按瓶规；箱规编码库存会按「组合比例」折算进瓶规后再验库存\n推荐流程：1.库存导入（全量替换）→ 2.渠道要货 + 验库存 → 3.审批通过 → 4.录入本周实际销货"
+    help="按主体分渠道/仓库 · 同主体内优先级占库存 · 审批后可录入本周实际销货做虚报核对\n库存口径：要货按瓶规；箱规编码库存会按「组合比例」折算进瓶规（验库存仅供参考，不拦提交）\n推荐流程：1.库存导入 → 2.渠道要货（Excel 按行分渠道开单）→ 3.审批通过 → 4.录入本周实际销货"
   >
     <template #toolbar>
       <ElDatePicker
@@ -716,7 +748,7 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
             <HelpTip
               inline
               title="验库存说明"
-              content="按每行匹配到的渠道仓库验库存：瓶规+箱规折算 − 同主体更高优先级占用。停用渠道不参与。"
+              content="验库存仅供参考，不拦截提交。缺货也可直接提交要货单。只有商品编码在档案里不存在时才会提示快速新增或去商品管理。"
             />
           </div>
         </div>
@@ -751,15 +783,25 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
               {{ formatProductQty(row.quantity, row.productCode) }}
             </template>
           </ElTableColumn>
-          <ElTableColumn label="匹配" width="100">
+          <ElTableColumn label="匹配" width="110">
             <template #default="{ row }">
               <ElTag v-if="row.resolveError" size="small" type="danger">失败</ElTag>
+              <ElTag
+                v-else-if="row.productCode && !productStore.getProductByCode(row.productCode)"
+                size="small"
+                type="warning"
+              >无商品</ElTag>
               <ElTag v-else size="small" type="success">OK</ElTag>
             </template>
           </ElTableColumn>
           <ElTableColumn label="说明" min-width="140" show-overflow-tooltip>
             <template #default="{ row }">
-              {{ row.resolveError || row.remark || '' }}
+              {{
+                row.resolveError
+                  || (row.productCode && !productStore.getProductByCode(row.productCode)
+                    ? '无此商品编码，提交时可快速新增或去商品管理'
+                    : (row.remark || ''))
+              }}
             </template>
           </ElTableColumn>
         </ElTable>
