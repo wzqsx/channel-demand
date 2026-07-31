@@ -12,6 +12,7 @@ import {
   ElTag,
   ElMessageBox,
   ElDatePicker,
+  ElEmpty,
 } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
 import HelpTip from '../components/HelpTip.vue';
@@ -47,6 +48,8 @@ const form = ref({
 
 const importDialogVisible = ref(false);
 const importData = ref<ImportRequisitionData[]>([]);
+const previewVisible = ref(false);
+const previewData = ref<ImportRequisitionData[]>([]);
 const stockCheckResults = ref<{
   productCode: string;
   productName: string;
@@ -61,6 +64,16 @@ const stockCheckResults = ref<{
 
 const detailVisible = ref(false);
 const detailRow = ref<Requisition | null>(null);
+
+const stockCheckSummary = computed(() => {
+  const rows = stockCheckResults.value;
+  return {
+    total: rows.length,
+    short: rows.filter(r => r.status === 'short').length,
+    low: rows.filter(r => r.status === 'low').length,
+    ok: rows.filter(r => r.status === 'ok').length,
+  };
+});
 
 const listRows = computed(() => {
   return requisitionStore.requisitions.filter(r => {
@@ -80,6 +93,8 @@ const openDialog = () => {
     weekStart: w,
   };
   importData.value = [];
+  previewData.value = [];
+  previewVisible.value = false;
   stockCheckResults.value = [];
   importDialogVisible.value = true;
 };
@@ -303,24 +318,55 @@ const importChannelSummary = computed(() => {
   return [...m.entries()].map(([label, n]) => `${label}×${n}`).join('；');
 });
 
+const previewOkRows = computed(() => previewData.value.filter(r => !r.resolveError));
+const previewBadRows = computed(() => previewData.value.filter(r => !!r.resolveError));
+const previewChannelSummary = computed(() => {
+  const m = new Map<string, number>();
+  for (const r of previewOkRows.value) {
+    const key = r.resolvedChannelLabel || r.resolvedChannelId || '—';
+    m.set(key, (m.get(key) || 0) + 1);
+  }
+  return [...m.entries()].map(([label, n]) => `${label}×${n}`).join('；');
+});
+
 const handleImport = async (event: Event) => {
-  const rows = await readExcelFromEvent(event);
-  const parsed = parseExcelRows(rows);
-  stockCheckResults.value = [];
-  if (!parsed.length) {
-    importData.value = [];
-    ElMessage.warning('未解析到有效要货行（商品编码或名称填一个即可，需能匹配商品档案）');
+  const input = event.target as HTMLInputElement | null;
+  try {
+    const rows = await readExcelFromEvent(event);
+    const parsed = parseExcelRows(rows);
+    if (!parsed.length) {
+      ElMessage.warning('未解析到有效要货行（商品编码或名称填一个即可，需能匹配商品档案）');
+      return;
+    }
+    previewData.value = enrichImportRows(parsed);
+    previewVisible.value = true;
+  } finally {
+    if (input) input.value = '';
+  }
+};
+
+const confirmPreviewImport = () => {
+  if (!previewData.value.length) {
+    ElMessage.warning('预览无数据可导入');
     return;
   }
-  importData.value = enrichImportRows(parsed);
+  importData.value = previewData.value;
+  stockCheckResults.value = [];
+  previewVisible.value = false;
   const bad = importBadRows.value.length;
   const ok = importOkRows.value.length;
   const channels = new Set(importOkRows.value.map(r => r.resolvedChannelId).filter(Boolean)).size;
   if (bad) {
-    ElMessage.warning(`已导入 ${ok + bad} 行：成功匹配 ${ok} 行（${channels} 个渠道），${bad} 行待修正`);
+    ElMessage.warning(`已确认导入 ${ok + bad} 行：成功匹配 ${ok} 行（${channels} 个渠道），${bad} 行待修正`);
   } else {
-    ElMessage.success(`已导入 ${ok} 行，将按 ${channels} 个渠道分别开单`);
+    ElMessage.success(`已确认导入 ${ok} 行，将按 ${channels} 个渠道分别开单`);
   }
+};
+
+const cancelPreviewImport = () => {
+  previewVisible.value = false;
+  previewData.value = [];
+  ElMessage.info('已取消本次导入');
 };
 
 const downloadDemandTemplate = () => {
@@ -439,11 +485,22 @@ const checkStock = () => {
 
 const runStockCheck = () => {
   if (!importData.value.length) {
-    ElMessage.warning('请先导入要货数据');
+    ElMessage.warning('请先导入或填写要货数据后再进行库存校验');
     return;
   }
   stockCheckResults.value = checkStock();
-  ElMessage.success('已刷新库存检查（仅供参考，不拦截提交）');
+  const { short, low, ok, total } = stockCheckSummary.value;
+  if (!total) {
+    ElMessage.warning('没有可校验的明细行');
+    return;
+  }
+  if (short > 0) {
+    ElMessage.warning(`验库存完成：共 ${total} 行 · 缺货 ${short} · 偏低 ${low} · 充足 ${ok}（仅供参考，不拦提交）`);
+  } else if (low > 0) {
+    ElMessage.warning(`验库存完成：共 ${total} 行 · 偏低 ${low} · 充足 ${ok}（仅供参考，不拦提交）`);
+  } else {
+    ElMessage.success(`验库存完成：共 ${total} 行全部充足（仅供参考，不拦提交）`);
+  }
 };
 
 /** 同一主体+渠道+仓库集合 → 一张要货单 */
@@ -680,9 +737,11 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
         width="200px"
       />
       <ElButton type="primary" size="small" @click="openDialog">新建要货</ElButton>
+      <ElButton type="warning" size="small" class="btn-template" @click="downloadDemandTemplate">
+        ⬇ 下载要货模板
+      </ElButton>
       <ElButton size="small" @click="goShortageAlert">缺货与预警</ElButton>
       <ElButton size="small" @click="exportList">导出明细</ElButton>
-      <ElButton size="small" @click="downloadDemandTemplate">要货模板</ElButton>
       <span class="week-label">
         要货周期：{{ weekLabel(filterWeek) }}
         <template v-if="isFutureWeek(filterWeek)">（提前）</template>
@@ -692,6 +751,22 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
 
     <div class="table-wrap">
       <ElTable :data="listRows" border size="small" stripe class="erp-data-table" height="100%">
+        <template #empty>
+          <div class="list-empty">
+            <ElEmpty :image-size="88">
+              <template #description>
+                <p class="list-empty__title">当前周期暂无要货单</p>
+                <p class="list-empty__desc">
+                  可点击上方「新建要货」，或先「下载要货模板」按规范填写后导入 Excel 快速开始
+                </p>
+              </template>
+              <div class="list-empty__actions">
+                <ElButton type="primary" size="small" @click="openDialog">新建要货</ElButton>
+                <ElButton type="warning" size="small" plain @click="downloadDemandTemplate">下载要货模板</ElButton>
+              </div>
+            </ElEmpty>
+          </div>
+        </template>
         <ElTableColumn type="index" label="序号" width="55" fixed="left" />
         <ElTableColumn prop="id" label="单号" width="140" sortable show-overflow-tooltip />
         <ElTableColumn prop="weekStart" label="要货周期" width="160" sortable>
@@ -818,27 +893,36 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
       </ElForm>
 
       <div class="import-block">
+        <div class="import-guide">
+          <div class="import-guide__title">导入前请先下载模板</div>
+          <p class="import-guide__text">
+            请先下载要货模板，按规范填写<strong>渠道</strong>及 <strong>SKU 数量</strong>后上传。
+            编码或名称填一个即可；提交前会弹出数据预览供核对。
+          </p>
+        </div>
         <div class="import-block__head">
           <span>要货明细</span>
-          <div>
+          <div class="import-block__actions">
             <input ref="demandFileRef" type="file" accept=".xlsx,.xls" class="hidden-file" @change="handleImport" />
-            <ElButton size="small" @click="triggerFile(demandFileRef)">导入 Excel</ElButton>
+            <ElButton type="warning" size="small" class="btn-template" @click="downloadDemandTemplate">
+              ⬇ 下载要货模板
+            </ElButton>
+            <ElButton type="primary" size="small" @click="triggerFile(demandFileRef)">导入 Excel</ElButton>
             <HelpTip
               inline
               title="Excel 列说明"
               content="列：主体编码/名称、渠道编码/名称、仓库编码或名称(逗号分隔)、商品编码/名称、数量、备注。编码或名称填一个即可。提交时按行归属自动拆成多张要货单；仓库列可空=该渠道全部绑定仓。"
             />
-            <ElButton size="small" @click="downloadDemandTemplate">下载模板</ElButton>
-            <ElButton size="small" type="primary" :disabled="!importOkRows.length" @click="runStockCheck">验库存</ElButton>
+            <ElButton size="small" @click="runStockCheck">验库存</ElButton>
             <HelpTip
               inline
               title="验库存说明"
-              content="验库存仅供参考，不拦截提交。缺货也可直接提交要货单。只有商品编码在档案里不存在时才会提示快速新增或去商品管理。"
+              content="验库存仅供参考，不拦截提交。缺货也可直接提交要货单。未导入数据时点击会提示先导入。"
             />
           </div>
         </div>
         <div v-if="importData.length" class="form-empty-hint" style="margin: 0 0 8px">
-          已匹配 {{ importOkRows.length }} 行
+          已确认导入 {{ importOkRows.length }} 行
           <template v-if="importChannelSummary">（{{ importChannelSummary }}）</template>
           <template v-if="importBadRows.length">；{{ importBadRows.length }} 行匹配失败，提交前需修正</template>
           。
@@ -890,11 +974,26 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
             </template>
           </ElTableColumn>
         </ElTable>
-        <div v-else class="empty-tip">请导入要货 Excel（表内填渠道，系统按行自动分配）</div>
+        <div v-else class="import-empty">
+          <ElEmpty :image-size="64">
+            <template #description>
+              <p class="list-empty__desc">请先下载模板，按规范填写渠道及 SKU 数量后上传</p>
+            </template>
+            <ElButton type="warning" size="small" plain @click="downloadDemandTemplate">下载要货模板</ElButton>
+            <ElButton type="primary" size="small" @click="triggerFile(demandFileRef)">导入 Excel</ElButton>
+          </ElEmpty>
+        </div>
       </div>
 
       <div v-if="stockCheckResults.length" class="import-block">
-        <div class="import-block__head"><span>库存检查</span></div>
+        <div class="import-block__head">
+          <span>库存检查</span>
+          <span class="stock-summary">
+            缺货 <b class="is-short">{{ stockCheckSummary.short }}</b>
+            · 偏低 <b class="is-low">{{ stockCheckSummary.low }}</b>
+            · 充足 <b class="is-ok">{{ stockCheckSummary.ok }}</b>
+          </span>
+        </div>
         <ElTable :data="stockCheckResults" border size="small" max-height="200">
           <ElTableColumn type="index" label="序号" width="55" />
           <ElTableColumn prop="channelLabel" label="渠道" min-width="120" show-overflow-tooltip />
@@ -934,6 +1033,80 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
       <template #footer>
         <ElButton size="small" @click="importDialogVisible = false">取消</ElButton>
         <ElButton size="small" type="primary" :disabled="!importOkRows.length" @click="handleSubmit">提交</ElButton>
+      </template>
+    </ElDialog>
+
+    <!-- 导入数据预览：确认后再写入明细 -->
+    <ElDialog
+      v-model="previewVisible"
+      title="导入数据预览"
+      width="920px"
+      align-center
+      append-to-body
+      :close-on-click-modal="false"
+      class="preview-dialog"
+      @closed="previewData = []"
+    >
+      <p class="preview-lead">
+        请核对系统解析出的<strong>渠道</strong>与<strong>要货明细</strong>，确认无误后再写入新建单。
+      </p>
+      <div class="preview-meta">
+        共 {{ previewData.length }} 行
+        · 可提交 {{ previewOkRows.length }}
+        <template v-if="previewBadRows.length"> · 待修正 {{ previewBadRows.length }}</template>
+        <template v-if="previewChannelSummary"> · 渠道：{{ previewChannelSummary }}</template>
+      </div>
+      <ElTable :data="previewData" border size="small" max-height="420">
+        <ElTableColumn type="index" label="序号" width="55" />
+        <ElTableColumn label="主体" min-width="110" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.resolvedCompanyLabel || row.companyCode || row.companyName || '—' }}
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="渠道" min-width="130" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.resolvedChannelLabel || row.channelCode || row.channelName || '—' }}
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="仓库" min-width="120" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.resolvedWarehouseLabel || row.warehouseCodes || '（渠道全部绑定仓）' }}
+          </template>
+        </ElTableColumn>
+        <ElTableColumn prop="productCode" label="商品编码" width="110" />
+        <ElTableColumn prop="productName" label="商品名称" min-width="140" show-overflow-tooltip />
+        <ElTableColumn prop="quantity" label="数量" width="100" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ formatProductQty(row.quantity, row.productCode) }}
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="匹配" width="100">
+          <template #default="{ row }">
+            <ElTag v-if="row.resolveError" size="small" type="danger">失败</ElTag>
+            <ElTag
+              v-else-if="row.productCode && !productStore.getProductByCode(row.productCode)"
+              size="small"
+              type="warning"
+            >无商品</ElTag>
+            <ElTag v-else size="small" type="success">OK</ElTag>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="说明" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.resolveError || row.remark || '' }}
+          </template>
+        </ElTableColumn>
+      </ElTable>
+      <template #footer>
+        <ElButton size="small" @click="cancelPreviewImport">取消</ElButton>
+        <ElButton
+          size="small"
+          type="primary"
+          :disabled="!previewData.length"
+          @click="confirmPreviewImport"
+        >
+          确认导入明细
+        </ElButton>
       </template>
     </ElDialog>
 
@@ -1095,9 +1268,106 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   margin-bottom: 8px;
   font-size: 13px;
   font-weight: 600;
+}
+
+.import-block__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.import-guide {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #fff7ed 0%, #fffbeb 100%);
+  border: 1px solid #fed7aa;
+}
+
+.import-guide__title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #9a3412;
+  margin-bottom: 4px;
+}
+
+.import-guide__text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #9a3412;
+}
+
+.btn-template {
+  font-weight: 700 !important;
+  letter-spacing: 0.02em;
+}
+
+.list-empty {
+  padding: 36px 16px 48px;
+}
+
+.list-empty__title {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--erp-text, #303133);
+}
+
+.list-empty__desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--erp-text-muted, #909399);
+}
+
+.list-empty__actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.import-empty {
+  padding: 12px 8px 20px;
+  background: #fafbfc;
+  border-radius: 8px;
+}
+
+.stock-summary {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--erp-text-muted);
+}
+
+.stock-summary .is-short {
+  color: #dc2626;
+}
+
+.stock-summary .is-low {
+  color: #d97706;
+}
+
+.stock-summary .is-ok {
+  color: #16a34a;
+}
+
+.preview-lead {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--erp-text, #303133);
+  line-height: 1.5;
+}
+
+.preview-meta {
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--erp-text-muted);
 }
 
 .hidden-file {
