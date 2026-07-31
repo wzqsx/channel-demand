@@ -115,13 +115,15 @@ export const useChannelStore = defineStore('channel', () => {
           seenWh.add(w.id);
           repaired.push(w.id);
         }
-        const derived = deriveChannelCompanies(repaired, getChannelCompanyIds({ ...ch, warehouseIds: repaired }));
+        const preferred = getChannelCompanyIds({ ...ch, warehouseIds: repaired });
+        const derived = deriveChannelCompanies(repaired, preferred);
         return {
           ...ch,
           code,
           warehouseIds: derived.warehouseIds,
-          companyIds: derived.companyIds,
-          companyId: derived.companyId,
+          // 仓全失效时仍保留原主体关联，否则要货下拉会出现「选了主体却没有渠道」
+          companyIds: derived.companyIds.length ? derived.companyIds : preferred,
+          companyId: derived.companyId || preferred[0] || ch.companyId || '',
         };
       });
       return;
@@ -262,6 +264,28 @@ export const useChannelStore = defineStore('channel', () => {
     return n;
   };
 
+  /** 仓库 id 去重后同步渠道绑定 */
+  const remapWarehouseIds = (idMap: Record<string, string>) => {
+    let n = 0;
+    channels.value = channels.value.map(ch => {
+      const nextWh = (ch.warehouseIds || []).map(id => idMap[id] || id);
+      const same =
+        nextWh.length === (ch.warehouseIds || []).length
+        && nextWh.every((id, i) => id === ch.warehouseIds[i]);
+      if (same) return ch;
+      n += 1;
+      const preferred = getChannelCompanyIds({ ...ch, warehouseIds: nextWh });
+      const derived = deriveChannelCompanies(nextWh, preferred);
+      return {
+        ...ch,
+        warehouseIds: derived.warehouseIds,
+        companyIds: derived.companyIds.length ? derived.companyIds : preferred,
+        companyId: derived.companyId || preferred[0] || ch.companyId || '',
+      };
+    });
+    return n;
+  };
+
   return {
     channels,
     initChannels,
@@ -277,5 +301,6 @@ export const useChannelStore = defineStore('channel', () => {
     upsertChannel,
     nextChannelCode,
     remapCompanyIds,
+    remapWarehouseIds,
   };
 }, { persist: true });

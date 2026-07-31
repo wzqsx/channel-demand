@@ -454,10 +454,26 @@ export const useRequisitionStore = defineStore('requisition', () => {
     return n;
   };
 
+  /** 仓库 id 去重后同步要货单所选仓 */
+  const remapWarehouseIds = (idMap: Record<string, string>) => {
+    let n = 0;
+    requisitions.value = requisitions.value.map(r => {
+      const next = (r.warehouseIds || []).map(id => idMap[id] || id);
+      const same =
+        next.length === (r.warehouseIds || []).length
+        && next.every((id, i) => id === r.warehouseIds[i]);
+      if (same) return r;
+      n += 1;
+      return { ...r, warehouseIds: next };
+    });
+    return n;
+  };
+
   return {
     requisitions,
     migrateLegacy,
     remapCompanyIds,
+    remapWarehouseIds,
     addRequisition,
     approveRequisition,
     rejectRequisition,

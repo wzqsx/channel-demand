@@ -24,22 +24,25 @@ export const useCompanyStore = defineStore('company', () => {
     ];
   };
 
-  /** 修复历史导入撞车的重复 id，避免主体多选「点一个全选」 */
-  const ensureUniqueIds = () => {
+  /** 修复历史导入撞车的重复 id，返回 旧id → 新id（供仓库/渠道同步） */
+  const ensureUniqueIds = (): Record<string, string> => {
+    const idMap: Record<string, string> = {};
     const seen = new Set<string>();
-    let fixed = 0;
     companies.value = companies.value.map(c => {
       const id = String(c.id || '').trim();
       if (id && !seen.has(id)) {
         seen.add(id);
+        idMap[id] = id;
         return id === c.id ? c : { ...c, id };
       }
+      const oldId = String(c.id || '').trim();
       const nextId = newCompanyId();
       seen.add(nextId);
-      fixed += 1;
+      if (oldId) idMap[oldId] = nextId;
+      idMap[nextId] = nextId;
       return { ...c, id: nextId };
     });
-    return fixed;
+    return idMap;
   };
 
   /**

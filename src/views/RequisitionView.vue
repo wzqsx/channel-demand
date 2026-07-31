@@ -71,6 +71,14 @@ const filteredChannels = computed(() => {
   return channelStore.getChannelsSortedByPriority(form.value.companyId);
 });
 
+const noChannelHint = computed(() => {
+  if (!form.value.companyId) return '请先选择主体';
+  if (filteredChannels.value.length) return '';
+  const all = channelStore.channels.filter(c => c.enabled !== false).length;
+  if (!all) return '尚未维护渠道，请先到「渠道管理」新增或导入';
+  return '该主体下没有关联渠道（渠道未绑此主体，或主体 id 未同步）。请到「渠道管理」编辑渠道勾选该主体，或重新导入渠道。';
+});
+
 const selectedChannel = computed(() =>
   form.value.channelId ? channelStore.getChannelById(form.value.channelId) : undefined,
 );
@@ -625,6 +633,10 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
                 :value="ch.id"
               />
             </ElSelect>
+            <div v-if="form.companyId && !filteredChannels.length" class="form-empty-hint">
+              {{ noChannelHint }}
+              <ElButton link type="primary" size="small" @click="goChannelManage">去渠道管理</ElButton>
+            </div>
           </ElFormItem>
           <ElFormItem label="仓库" required class="form-cell form-cell--full">
             <div class="wh-box" :class="{ 'wh-box--locked': !form.channelId }">
@@ -849,12 +861,24 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
 }
 
 .req-form :deep(.el-form-item__content) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
   line-height: normal;
   min-width: 0;
   max-width: 100%;
   flex: 1;
   overflow: visible;
   box-sizing: border-box;
+}
+
+.form-empty-hint {
+  width: 100%;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #b45309;
+  line-height: 1.5;
 }
 
 /* 统一输入控件：保证边框完整、宽度不溢出裁切 */

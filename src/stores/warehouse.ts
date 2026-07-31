@@ -29,23 +29,26 @@ export const useWarehouseStore = defineStore('warehouse', () => {
 
   /**
    * 修复历史导入造成的重复 id（同一毫秒 Date.now 撞车）。
-   * 重复 id 会导致勾选一个仓库时界面像「全选」。
+   * 返回 旧id → 新id，供渠道/要货同步改挂。
    */
-  const ensureUniqueIds = () => {
+  const ensureUniqueIds = (): Record<string, string> => {
+    const idMap: Record<string, string> = {};
     const seen = new Set<string>();
-    let fixed = 0;
     warehouses.value = warehouses.value.map(w => {
       const id = String(w.id || '').trim();
       if (id && !seen.has(id)) {
         seen.add(id);
+        idMap[id] = id;
         return id === w.id ? w : { ...w, id };
       }
+      const oldId = String(w.id || '').trim();
       const nextId = newWarehouseId();
       seen.add(nextId);
-      fixed += 1;
+      if (oldId) idMap[oldId] = nextId;
+      idMap[nextId] = nextId;
       return { ...w, id: nextId };
     });
-    return fixed;
+    return idMap;
   };
 
   const addWarehouse = (warehouse: Omit<Warehouse, 'id'>) => {

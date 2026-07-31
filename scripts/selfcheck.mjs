@@ -70,6 +70,22 @@ async function main() {
   ok('仓库页筛选：新主体仓库为空', useWarehouseStore().getWarehousesByCompany(added.id).length === 0);
   ok('渠道页筛选：新主体渠道为空', useChannelStore().getChannelsByCompany(added.id).length === 0);
 
+  console.log('\n[2b] 主体重复 id 修复后渠道仍能按主体筛出');
+  const dupId = companyA.companies[0].id;
+  companyA.companies.push({
+    id: dupId,
+    code: 'DUPX',
+    name: '重复id主体',
+  });
+  const mapUnique = companyA.ensureUniqueIds();
+  useWarehouseStore().remapCompanyIds(mapUnique);
+  useChannelStore().remapCompanyIds(mapUnique);
+  useRequisitionStore().remapCompanyIds(mapUnique);
+  const afterUnique = companyA.companies.filter(c => c.id === dupId).length;
+  ok('ensureUniqueIds 消除重复主体 id', afterUnique === 1, `count=${afterUnique}`);
+  const chForComp001 = useChannelStore().getChannelsByCompany('COMP001');
+  ok('COMP001 下仍有渠道', chForComp001.length > 0, `n=${chForComp001.length}`);
+
   console.log('\n[3] 新主体挂仓/挂渠道后联动');
   const wh = useWarehouseStore();
   wh.addWarehouse({ code: '自检仓', name: '自检仓', companyId: added.id });
