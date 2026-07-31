@@ -38,13 +38,12 @@ export const useWarehouseStore = defineStore('warehouse', () => {
       const id = String(w.id || '').trim();
       if (id && !seen.has(id)) {
         seen.add(id);
-        idMap[id] = id;
+        idMap[id] = id; // 正主：恒等映射
         return id === w.id ? w : { ...w, id };
       }
-      const oldId = String(w.id || '').trim();
+      // 撞车只换本行 id，不把正主 id 改挂走
       const nextId = newWarehouseId();
       seen.add(nextId);
-      if (oldId) idMap[oldId] = nextId;
       idMap[nextId] = nextId;
       return { ...w, id: nextId };
     });

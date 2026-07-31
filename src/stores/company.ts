@@ -32,13 +32,12 @@ export const useCompanyStore = defineStore('company', () => {
       const id = String(c.id || '').trim();
       if (id && !seen.has(id)) {
         seen.add(id);
-        idMap[id] = id;
+        idMap[id] = id; // 正主：恒等映射
         return id === c.id ? c : { ...c, id };
       }
-      const oldId = String(c.id || '').trim();
+      // 空 id 或与正主撞车：换新 id。绝不能把正主 id 再映射走，否则渠道会丢挂
       const nextId = newCompanyId();
       seen.add(nextId);
-      if (oldId) idMap[oldId] = nextId;
       idMap[nextId] = nextId;
       return { ...c, id: nextId };
     });
