@@ -99,6 +99,23 @@ async function main() {
       throw new Error(`upsert 响应过大 (${upText.length} bytes)，疑似回传了全表`);
     }
     console.log('✓ upsert 响应体', upText.length, 'bytes');
+
+    const agg = await fetch(`${BASE}/api/stocks/agg`, { signal: AbortSignal.timeout(30000) });
+    if (!agg.ok) throw new Error(`agg HTTP ${agg.status}`);
+    const aggBody = await agg.json();
+    if ((aggBody.rows?.length || 0) !== 3000) throw new Error(`agg 行数 ${aggBody.rows?.length}`);
+    console.log('✓ agg', aggBody.count, 'tuples');
+
+    const page = await fetch(`${BASE}/api/stocks/page?offset=0&limit=50`, {
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!page.ok) throw new Error(`page HTTP ${page.status}`);
+    const pageBody = await page.json();
+    if (pageBody.total !== 3000 || pageBody.stocks?.length !== 50) {
+      throw new Error(`page total=${pageBody.total} len=${pageBody.stocks?.length}`);
+    }
+    console.log('✓ page', pageBody.stocks.length, '/', pageBody.total);
+
     console.log('\n冒烟通过（临时库，未改 data/stock.db）');
   } catch (e) {
     console.error('\n冒烟失败:', e?.message || e);

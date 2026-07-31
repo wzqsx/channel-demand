@@ -63,6 +63,37 @@ export async function stockDbLoad() {
   }>('/api/stocks', { timeoutMs: 120000 });
 }
 
+/** 紧凑汇总行：[warehouseId, productCode, stock, inTransit] */
+export async function stockDbLoadAgg() {
+  return request<{
+    count: number;
+    rows: Array<[string, string, number, number]>;
+    customFields: import('../types').CustomFieldConfig[];
+  }>('/api/stocks/agg', { timeoutMs: 120000 });
+}
+
+export async function stockDbQueryPage(params: {
+  offset: number;
+  limit: number;
+  warehouseIds?: string[];
+  sort?: string;
+  order?: 'asc' | 'desc';
+}) {
+  const q = new URLSearchParams();
+  q.set('offset', String(params.offset));
+  q.set('limit', String(params.limit));
+  if (params.warehouseIds?.length) q.set('warehouseIds', params.warehouseIds.join(','));
+  if (params.sort) q.set('sort', params.sort);
+  if (params.order) q.set('order', params.order);
+  return request<{
+    total: number;
+    offset: number;
+    limit: number;
+    stocks: import('../types').WarehouseStock[];
+    customFields: import('../types').CustomFieldConfig[];
+  }>(`/api/stocks/page?${q.toString()}`, { timeoutMs: 30000 });
+}
+
 export async function stockDbImport(body: {
   replaceAll: boolean;
   rows: Array<{

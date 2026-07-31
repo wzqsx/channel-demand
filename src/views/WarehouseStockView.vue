@@ -52,7 +52,8 @@ const companyStore = useCompanyStore();
 const requisitionStore = useRequisitionStore();
 const channelStore = useChannelStore();
 
-const { stocks, customFields, useSqlite, sqliteDbPath } = storeToRefs(stockStore);
+const { stocks, customFields, useSqlite, sqliteDbPath, largeMode, remoteTotal, hydrated } =
+  storeToRefs(stockStore);
 const { warehouses } = storeToRefs(warehouseStore);
 const { products } = storeToRefs(productStore);
 
@@ -148,6 +149,7 @@ const filteredWarehouses = computed(() => {
 });
 
 const filteredStocks = computed(() => {
+  if (largeMode.value) return [] as typeof stocks.value;
   let result = stocks.value;
   if (searchCompanyIds.value.length) {
     const ids = new Set(
@@ -164,6 +166,11 @@ const filteredStocks = computed(() => {
   return result;
 });
 
+const resolveWarehouseFilterIds = (): string[] | undefined => {
+  if (searchWarehouseIds.value.length) return searchWarehouseIds.value.slice();
+  if (searchCompanyIds.value.length) return filteredWarehouses.value.map(w => w.id);
+  return undefined;
+};
 const onCompanyFilterChange = () => {
   const allowed = new Set(filteredWarehouses.value.map(w => w.id));
   searchWarehouseIds.value = searchWarehouseIds.value.filter(id => allowed.has(id));
@@ -228,9 +235,10 @@ const handleSubmit = () => {
   );
   dialogVisible.value = false;
   ElMessage.success('保存成功');
+  if (largeMode.value) void fetchRemotePage();
 };
 
-const handleDelete = async (id: string) => {
+const handleDelete = async (row: WarehouseStock) => {
   try {
     await ElMessageBox.confirm('确认删除该库存行？', '删除库存', {
       type: 'warning',
@@ -240,8 +248,9 @@ const handleDelete = async (id: string) => {
   } catch {
     return;
   }
-  stockStore.deleteStock(id);
+  stockStore.deleteStock(row.id, row);
   ElMessage.success('删除成功');
+  if (largeMode.value) void fetchRemotePage();
 };
 
 /** Excel 中「库存 / 在途库存」均为瓶单位；仓库可用「仓库编码」或「仓库名称」 */
@@ -667,6 +676,7 @@ const sortHeaderClass = (key: string) => {
 };
 
 const displayRows = computed(() => {
+  if (largeMode.value) return [] as WarehouseStock[];
   const source = filteredStocks.value;
   const { key, order } = sortState.value;
   if (!key || !order) return source;
@@ -685,8 +695,49 @@ const displayRows = computed(() => {
 
 const page = ref(1);
 const pageSize = ref(100);
-const totalRows = computed(() => displayRows.value.length);
+const remoteRows = ref<WarehouseStock[]>([]);
+const listLoading = ref(false);
+let fetchSeq = 0;
+
+const fetchRemotePage = async () => {
+  if (!largeMode.value || !hydrated.value) return;
+  const seq = ++fetchSeq;
+  listLoading.value = true;
+  try {
+    const res = await stockStore.queryPage({
+      offset: (page.value - 1) * pageSize.value,
+      limit: pageSize.value,
+      warehouseIds: resolveWarehouseFilterIds(),
+      sort: sortState.value.key || 'warehouse_id',
+      order: sortState.value.order === 'descending' ? 'desc' : 'asc',
+    });
+    if (seq !== fetchSeq) return;
+    remoteRows.value = res.stocks;
+  } catch (e) {
+    console.error(e);
+    if (seq === fetchSeq) ElMessage.error('库存分页加载失败');
+  } finally {
+    if (seq === fetchSeq) listLoading.value = false;
+  }
+};
+
+watch(
+  [largeMode, hydrated, page, pageSize, searchCompanyIds, searchWarehouseIds, sortState],
+  () => {
+    if (largeMode.value) void fetchRemotePage();
+  },
+  { deep: true },
+);
+
+watch([searchCompanyIds, searchWarehouseIds, sortState], () => {
+  if (page.value !== 1) page.value = 1;
+});
+
+const totalRows = computed(() =>
+  largeMode.value ? remoteTotal.value : displayRows.value.length,
+);
 const pagedRows = computed(() => {
+  if (largeMode.value) return remoteRows.value;
   const start = (page.value - 1) * pageSize.value;
   return displayRows.value.slice(start, start + pageSize.value);
 });
@@ -753,7 +804,25 @@ const buildStockExportRow = (stock: WarehouseStock) => {
 };
 
 const handleExport = async () => {
-  const list = filteredStocks.value;
+  let list = filteredStocks.value;
+  if (largeMode.value) {
+    const loadingTip = ElLoading.service({ lock: true, text: '正在从 SQLite 读取导出数据…' });
+    try {
+      const { stockDbLoad } = await import('../api/stockDb');
+      const data = await stockDbLoad();
+      list = data.stocks || [];
+      const whIds = resolveWarehouseFilterIds();
+      if (whIds?.length) {
+        const set = new Set(whIds);
+        list = list.filter(s => set.has(s.warehouseId));
+      }
+    } catch (e) {
+      ElMessage.error(e instanceof Error ? e.message : '导出读取失败');
+      return;
+    } finally {
+      loadingTip.close();
+    }
+  }
   if (list.length >= 20000) {
     try {
       await ElMessageBox.confirm(
@@ -951,6 +1020,7 @@ const handleFieldDelete = (key: string) => {
       stripe
       class="erp-data-table stock-table"
       height="100%"
+      v-loading="listLoading"
       :row-class-name="({ row }: { row: WarehouseStock }) => (metaOf(row).gap > 0 ? 'stock-row--alert' : '')"
     >
       <ElTableColumn width="52" fixed="left" align="center" class-name="col-gear-cell">
@@ -1107,7 +1177,7 @@ const handleFieldDelete = (key: string) => {
           </template>
           <template v-else-if="col.key === 'actions'">
             <ElButton link type="primary" size="small" @click="openDialog(row as WarehouseStock)">编辑</ElButton>
-            <ElButton link type="danger" size="small" @click="handleDelete((row as WarehouseStock).id)">删除</ElButton>
+            <ElButton link type="danger" size="small" @click="handleDelete(row as WarehouseStock)">删除</ElButton>
           </template>
         </template>
       </ElTableColumn>

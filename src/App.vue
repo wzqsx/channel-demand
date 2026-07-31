@@ -10,7 +10,7 @@ const router = useRouter();
 const route = useRoute();
 const importInputRef = ref<HTMLInputElement | null>(null);
 const stockStore = useWarehouseStockStore();
-const { hydrated, useSqlite, importing } = storeToRefs(stockStore);
+const { hydrated, useSqlite, importing, largeMode } = storeToRefs(stockStore);
 
 const bootHint = computed(() => {
   if (importing.value) return '正在导入库存，请稍候…';
@@ -131,6 +131,7 @@ const handleImportFile = async (event: Event) => {
         <div class="topbar-title">{{ currentTitle }}</div>
         <div class="topbar-actions">
           <span v-if="bootHint" class="boot-hint">{{ bootHint }}</span>
+          <span v-else-if="largeMode" class="engine-hint" title="大表模式：内存只留索引，列表分页读库">大表模式</span>
           <span v-else-if="useSqlite" class="engine-hint" title="库存写入本机 SQLite">SQLite</span>
           <span v-else class="engine-hint muted" title="库存写入浏览器">浏览器库</span>
           <input

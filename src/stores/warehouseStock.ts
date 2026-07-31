@@ -19,6 +19,8 @@ import {
 import {
   stockDbHealth,
   stockDbLoad,
+  stockDbLoadAgg,
+  stockDbQueryPage,
   stockDbImport,
   stockDbUpsert,
   stockDbDelete,
@@ -27,6 +29,7 @@ import {
   stockDbReplaceAll,
   stockDbBackupInfo,
 } from '../api/stockDb';
+import { LARGE_STOCK_SOFT } from '../utils/largeScale';
 
 const stockKey = (warehouseId: string, productCode: string) =>
   `${warehouseId}__${productCode}`;
@@ -116,6 +119,9 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   const customFields = ref<CustomFieldConfig[]>([]);
   const hydrated = ref(false);
   const importing = ref(false);
+  /** 大单量：内存只留索引，列表走 SQLite 分页 */
+  const largeMode = ref(false);
+  const remoteTotal = ref(0);
   /** 是否已连上本地 SQLite 服务 */
   const useSqlite = ref(false);
   const sqliteDbPath = ref('');
@@ -131,6 +137,50 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
       keys.set(stockKey(s.warehouseId, s.productCode), s);
     }
     rowByKey.value = keys;
+  };
+
+  /** 仅从紧凑汇总建索引，不把几万行放进 stocks */
+  const applyAgg = (
+    tuples: Array<[string, string, number, number]>,
+    nextFields?: CustomFieldConfig[],
+  ) => {
+    const index = new Map<string, Map<string, WhAgg>>();
+    for (let i = 0; i < tuples.length; i++) {
+      const [warehouseId, productCode, stock, inTransit] = tuples[i];
+      let wm = index.get(productCode);
+      if (!wm) {
+        wm = new Map();
+        index.set(productCode, wm);
+      }
+      const cur = wm.get(warehouseId);
+      if (cur) {
+        cur.stock += Number(stock) || 0;
+        cur.inTransit += Number(inTransit) || 0;
+      } else {
+        wm.set(warehouseId, {
+          stock: Number(stock) || 0,
+          inTransit: Number(inTransit) || 0,
+        });
+      }
+    }
+    productWhIndex.value = index;
+    stocks.value = [];
+    rowByKey.value = new Map();
+    largeMode.value = true;
+    remoteTotal.value = tuples.length;
+    if (nextFields) customFields.value = nextFields;
+  };
+
+  const enterLargeModeFromRows = (
+    list: WarehouseStock[],
+    nextFields?: CustomFieldConfig[],
+  ) => {
+    rebuildIndex(list);
+    stocks.value = [];
+    rowByKey.value = new Map();
+    largeMode.value = true;
+    remoteTotal.value = list.length;
+    if (nextFields) customFields.value = nextFields;
   };
 
   const bumpIndexCell = (
@@ -193,12 +243,18 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     nextFields: CustomFieldConfig[],
   ) => {
     const normalized = (nextStocks || []).map(normalizeRow);
+    if (useSqlite.value && normalized.length >= LARGE_STOCK_SOFT) {
+      enterLargeModeFromRows(normalized, nextFields);
+      return;
+    }
     stocks.value = normalized;
     rebuildIndex(normalized);
     customFields.value = nextFields || [];
+    largeMode.value = false;
+    remoteTotal.value = normalized.length;
   };
 
-  /** 启动：优先 SQLite；空库时把 IDB 迁过去（大表后台迁，不堵界面） */
+  /** 启动：优先 SQLite；大表只拉汇总索引，不整表进内存 */
   const hydrateFromIdb = async () => {
     try {
       const health = await stockDbHealth();
@@ -206,40 +262,42 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
         useSqlite.value = true;
         sqliteDbPath.value = health.dbPath || '';
         try {
-          // 大表 JSON 解析前让出主线程，避免首屏假死
           await yieldToMain();
-          const data = await stockDbLoad();
-          await yieldToMain();
-          if ((data.stocks?.length || 0) === 0) {
+          if ((health.stockCount || 0) === 0) {
             const idb = await loadStockPersist();
             const idbStocks = (idb?.stocks as WarehouseStock[]) || [];
             const idbFields = (idb?.customFields as CustomFieldConfig[]) || [];
             if (idbStocks.length > 0) {
-              // 先展示，再视大小决定同步/后台迁库
-              applyLoaded(idbStocks, idbFields);
               hydrated.value = true;
-              if (idbStocks.length <= 5000) {
+              if (idbStocks.length <= LARGE_STOCK_SOFT) {
                 await stockDbReplaceAll(idbStocks, idbFields);
-                const again = await stockDbLoad();
-                applyLoaded(again.stocks || [], again.customFields || []);
+                applyLoaded(idbStocks, idbFields);
               } else {
+                enterLargeModeFromRows(idbStocks, idbFields);
                 void stockDbReplaceAll(idbStocks, idbFields)
                   .then(async () => {
-                    const again = await stockDbLoad();
-                    applyLoaded(again.stocks || [], again.customFields || []);
-                    console.info(`[stock] 已将 ${idbStocks.length} 行从浏览器迁入 SQLite`);
+                    const agg = await stockDbLoadAgg();
+                    applyAgg(agg.rows, agg.customFields || idbFields);
+                    console.info(`[stock] 大表模式：已迁入 SQLite 并仅保留索引 ${agg.count} 行`);
                   })
                   .catch(e => console.error('大表迁入 SQLite 失败', e));
               }
             } else {
-              applyLoaded([], data.customFields || []);
+              applyLoaded([], []);
             }
+          } else if ((health.stockCount || 0) >= LARGE_STOCK_SOFT) {
+            const agg = await stockDbLoadAgg();
+            await yieldToMain();
+            applyAgg(agg.rows, agg.customFields || []);
           } else {
+            const data = await stockDbLoad();
+            await yieldToMain();
             applyLoaded(data.stocks || [], data.customFields || []);
           }
         } catch (e) {
           console.error('SQLite 读取失败，回退 IndexedDB', e);
           useSqlite.value = false;
+          largeMode.value = false;
           const data = await loadStockPersist();
           if (data) {
             applyLoaded(
@@ -250,6 +308,7 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
         }
       } else {
         useSqlite.value = false;
+        largeMode.value = false;
         const data = await loadStockPersist();
         if (data) {
           applyLoaded(
@@ -261,9 +320,38 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     } catch (e) {
       console.error('库存 hydrate 失败', e);
       useSqlite.value = false;
+      largeMode.value = false;
     } finally {
       hydrated.value = true;
     }
+  };
+
+  const queryPage = async (opts: {
+    offset: number;
+    limit: number;
+    warehouseIds?: string[];
+    sort?: string;
+    order?: 'asc' | 'desc';
+  }) => {
+    if (useSqlite.value) {
+      const res = await stockDbQueryPage(opts);
+      remoteTotal.value = res.total;
+      return res;
+    }
+    let list = stocks.value;
+    if (opts.warehouseIds?.length) {
+      const set = new Set(opts.warehouseIds);
+      list = list.filter(s => set.has(s.warehouseId));
+    }
+    const total = list.length;
+    remoteTotal.value = total;
+    return {
+      total,
+      offset: opts.offset,
+      limit: opts.limit,
+      stocks: list.slice(opts.offset, opts.offset + opts.limit),
+      customFields: customFields.value,
+    };
   };
 
   watch(stocks, () => scheduleSave(), { deep: false });
@@ -356,6 +444,13 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   };
 
   const countByWarehouse = (warehouseId: string) => {
+    if (largeMode.value || !stocks.value.length) {
+      let n = 0;
+      for (const wm of productWhIndex.value.values()) {
+        if (wm.has(warehouseId)) n += 1;
+      }
+      return n;
+    }
     let n = 0;
     for (const s of stocks.value) {
       if (s.warehouseId === warehouseId) n += 1;
@@ -371,58 +466,71 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     fields?: Record<string, any>,
   ) => {
     const key = stockKey(warehouseId, productCode);
-    const prev = rowByKey.value.get(key);
-    let row: WarehouseStock;
-    if (prev) {
-      bumpIndexCell(
-        productCode,
-        warehouseId,
-        (Number(stock) || 0) - prev.stock,
-        (Number(inTransitStock) || 0) - prev.inTransitStock,
-      );
-      row = normalizeRow({
-        ...prev,
-        stock,
-        inTransitStock,
-        customFields: fields !== undefined ? fields : prev.customFields,
-      });
-      const next = stocks.value.slice();
-      const idx = next.findIndex(s => s.warehouseId === warehouseId && s.productCode === productCode);
-      if (idx >= 0) next[idx] = row;
-      else next.push(row);
-      stocks.value = next;
+    const prev =
+      rowByKey.value.get(key)
+      || (!largeMode.value
+        ? stocks.value.find(s => s.warehouseId === warehouseId && s.productCode === productCode)
+        : undefined);
+    const oldStock = prev?.stock ?? sumFromIndex(productWhIndex.value, productCode, [warehouseId]).stock;
+    const oldTransit =
+      prev?.inTransitStock
+      ?? sumFromIndex(productWhIndex.value, productCode, [warehouseId]).inTransit;
+
+    bumpIndexCell(
+      productCode,
+      warehouseId,
+      (Number(stock) || 0) - oldStock,
+      (Number(inTransitStock) || 0) - oldTransit,
+    );
+
+    const row = normalizeRow({
+      id: prev?.id || `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      warehouseId,
+      productCode,
+      stock,
+      inTransitStock,
+      customFields: fields !== undefined ? fields : prev?.customFields,
+    });
+
+    if (!largeMode.value) {
+      if (prev) {
+        const next = stocks.value.slice();
+        const idx = next.findIndex(s => s.warehouseId === warehouseId && s.productCode === productCode);
+        if (idx >= 0) next[idx] = row;
+        else next.push(row);
+        stocks.value = next;
+      } else {
+        stocks.value = [...stocks.value, row];
+      }
       const keys = new Map(rowByKey.value);
       keys.set(key, row);
       rowByKey.value = keys;
     } else {
-      row = normalizeRow({
-        id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-        warehouseId,
-        productCode,
-        stock,
-        inTransitStock,
-        customFields: fields,
-      });
-      bumpIndexCell(productCode, warehouseId, row.stock, row.inTransitStock);
-      stocks.value = [...stocks.value, row];
-      const keys = new Map(rowByKey.value);
-      keys.set(key, row);
-      rowByKey.value = keys;
+      remoteTotal.value = Math.max(remoteTotal.value, remoteTotal.value); // keep
     }
+
     if (useSqlite.value) {
       void stockDbUpsert(row).catch(e => console.error('SQLite upsert 失败', e));
     }
   };
 
-  const deleteStock = (id: string) => {
-    const prev = stocks.value.find(s => s.id === id);
-    if (!prev) return;
-    bumpIndexCell(prev.productCode, prev.warehouseId, -prev.stock, -prev.inTransitStock);
-    const next = stocks.value.filter(s => s.id !== id);
-    stocks.value = next;
-    const keys = new Map(rowByKey.value);
-    keys.delete(stockKey(prev.warehouseId, prev.productCode));
-    rowByKey.value = keys;
+  const deleteStock = (id: string, hint?: WarehouseStock) => {
+    const prev =
+      hint
+      || stocks.value.find(s => s.id === id)
+      || [...rowByKey.value.values()].find(s => s.id === id);
+    if (prev) {
+      bumpIndexCell(prev.productCode, prev.warehouseId, -prev.stock, -prev.inTransitStock);
+      if (!largeMode.value) {
+        const next = stocks.value.filter(s => s.id !== id);
+        stocks.value = next;
+        const keys = new Map(rowByKey.value);
+        keys.delete(stockKey(prev.warehouseId, prev.productCode));
+        rowByKey.value = keys;
+      } else if (remoteTotal.value > 0) {
+        remoteTotal.value -= 1;
+      }
+    }
     if (useSqlite.value) {
       void stockDbDelete(id).catch(e => console.error('SQLite delete 失败', e));
     }
@@ -724,9 +832,12 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     customFields,
     hydrated,
     importing,
+    largeMode,
+    remoteTotal,
     useSqlite,
     sqliteDbPath,
     hydrateFromIdb,
+    queryPage,
     flushSave,
     initStocks,
     getStocksByWarehouse,

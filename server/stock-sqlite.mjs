@@ -365,6 +365,72 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    // 紧凑汇总：只给前端建索引，不把自定义字段/整行塞进内存
+    if (req.method === 'GET' && p === '/api/stocks/agg') {
+      const rows = db
+        .prepare('SELECT warehouse_id, product_code, stock, in_transit FROM stocks')
+        .all()
+        .map(r => [
+          String(r.warehouse_id),
+          String(r.product_code),
+          Number(r.stock) || 0,
+          Number(r.in_transit) || 0,
+        ]);
+      return json(res, 200, {
+        count: rows.length,
+        rows,
+        customFields: getCustomFields(),
+      });
+    }
+
+    // 分页列表：库存页只渲染当前页
+    if (req.method === 'GET' && p === '/api/stocks/page') {
+      const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
+      const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') || 100)));
+      const wh = String(url.searchParams.get('warehouseIds') || '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+      const sortRaw = String(url.searchParams.get('sort') || 'warehouse_id');
+      const order = String(url.searchParams.get('order') || 'asc').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+      const sortMap = {
+        warehouse_id: 'warehouse_id',
+        warehouse: 'warehouse_id',
+        product_code: 'product_code',
+        productCode: 'product_code',
+        stock: 'stock',
+        stockDisp: 'stock',
+        stockBottle: 'stock',
+        in_transit: 'in_transit',
+        inTransitDisp: 'in_transit',
+        inTransitBottle: 'in_transit',
+      };
+      const sortCol = sortMap[sortRaw] || 'warehouse_id';
+
+      let where = '';
+      const params = [];
+      if (wh.length) {
+        where = `WHERE warehouse_id IN (${wh.map(() => '?').join(',')})`;
+        params.push(...wh);
+      }
+      const total = Number(
+        db.prepare(`SELECT COUNT(*) AS c FROM stocks ${where}`).get(...params)?.c || 0,
+      );
+      const list = db
+        .prepare(
+          `SELECT * FROM stocks ${where} ORDER BY ${sortCol} ${order}, product_code ASC LIMIT ? OFFSET ?`,
+        )
+        .all(...params, limit, offset)
+        .map(rowToStock);
+      return json(res, 200, {
+        total,
+        offset,
+        limit,
+        stocks: list,
+        customFields: getCustomFields(),
+      });
+    }
+
     if (req.method === 'PUT' && p === '/api/stocks') {
       const body = await readBody(req);
       const rows = Array.isArray(body?.stocks) ? body.stocks : [];
