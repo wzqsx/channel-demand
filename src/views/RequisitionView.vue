@@ -108,31 +108,24 @@ const setPeriodStart = (target: 'filter' | 'form', raw?: string | null) => {
 
 const formWeekHint = computed(() => {
   const w = form.value.weekStart;
-  if (!w) return '自选起始日，结束日自动为第 7 天（共 7 天）';
-  const range = `${weekLabel(w)}（${w} ~ ${weekEnd(w)}）`;
-  if (isFutureWeek(w)) {
-    return `${range} · 尚未到提报日，提交时会确认`;
-  }
-  if (w < currentWeekStart()) {
-    return `${range} · 历史周期`;
-  }
-  if (w === currentWeekStart()) {
-    return `${range} · 从今天起算`;
-  }
-  return range;
+  if (!w) return '';
+  if (isFutureWeek(w)) return '尚未到提报日，提交时会确认';
+  if (w < currentWeekStart()) return '历史周期';
+  if (w === currentWeekStart()) return '从今天起算';
+  return '';
 });
 
-/** 日期范围选择器绑定：改起始则结束固定为 +6 天 */
-const formPeriodRange = computed({
-  get: (): [string, string] | null => {
-    const s = form.value.weekStart;
-    if (!s) return null;
-    return [s, weekEnd(s)];
-  },
-  set: (v: [string, string] | null) => {
-    if (v?.[0]) form.value.weekStart = toDateKey(v[0]);
-  },
+const formWeekEndText = computed(() => {
+  const w = form.value.weekStart;
+  if (!w) return '—';
+  const end = weekEnd(w);
+  const d = new Date(end + 'T00:00:00');
+  return `${d.getMonth() + 1}月${d.getDate()}日`;
 });
+
+const onFormStartChange = (v: string | null) => {
+  if (v) form.value.weekStart = toDateKey(v);
+};
 
 const filterPeriodRange = computed({
   get: (): [string, string] | null => {
@@ -864,42 +857,46 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
       <ElForm :model="form" label-width="88px" size="small" class="req-form">
         <div class="form-grid">
           <ElFormItem label="要货周期" required class="form-cell form-cell--full">
-            <div class="week-pick">
+            <div class="period-row">
               <ElDatePicker
-                v-model="formPeriodRange"
-                type="daterange"
+                v-model="form.weekStart"
+                type="date"
                 value-format="YYYY-MM-DD"
-                start-placeholder="起始日"
-                end-placeholder="结束日"
-                class="req-control req-control--range"
+                placeholder="起始日"
+                class="req-control period-start"
                 :clearable="false"
                 :editable="false"
-                @change="(v: [string, string] | null) => { if (v?.[0]) setPeriodStart('form', v[0]) }"
+                @change="onFormStartChange"
               />
-              <span class="week-pick__label" :class="{ 'is-future': isFutureWeek(form.weekStart) }">
+              <span class="period-sep">至</span>
+              <div
+                class="period-end"
+                title="结束日由起始日自动加 6 天生成，不可单独修改"
+              >
+                <span class="period-end__date">{{ formWeekEndText }}</span>
+                <span class="period-end__tag">自动 +6 天</span>
+              </div>
+              <span
+                v-if="formWeekHint"
+                class="week-pick__label"
+                :class="{ 'is-future': isFutureWeek(form.weekStart) }"
+              >
                 {{ formWeekHint }}
               </span>
             </div>
-            <div class="form-empty-hint" style="margin-top: 4px">
-              点选任意起始日即可；结束日自动为起始日后第 6 天（共 7 天）。例：选 7月30日 → 7月30日 — 8月5日。
+            <div class="period-hint">
+              只需选择起始日；结束日自动为起始日后第 6 天（共 7 天）。例：选 7月30日 → 7月30日 — 8月5日。
             </div>
           </ElFormItem>
           <ElFormItem class="form-cell form-cell--full">
-            <div class="form-empty-hint" style="margin: 0">
-              无需选手动主体/渠道：导入 Excel 后按每行的渠道自动开单（多渠道会拆成多张要货单）。
+            <div class="period-hint" style="margin: 0; color: var(--erp-text-muted)">
+              无需选手动主体/渠道：导入 Excel 后按每行渠道自动开单（多渠道会拆成多张要货单）。
             </div>
           </ElFormItem>
         </div>
       </ElForm>
 
       <div class="import-block">
-        <div class="import-guide">
-          <div class="import-guide__title">导入前请先下载模板</div>
-          <p class="import-guide__text">
-            请先下载要货模板，按规范填写<strong>渠道</strong>及 <strong>SKU 数量</strong>后上传。
-            编码或名称填一个即可；提交前会弹出数据预览供核对。
-          </p>
-        </div>
         <div class="import-block__head">
           <span>要货明细</span>
           <div class="import-block__actions">
@@ -908,16 +905,17 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
               ⬇ 下载要货模板
             </ElButton>
             <ElButton type="primary" size="small" @click="triggerFile(demandFileRef)">导入 Excel</ElButton>
+            <ElButton
+              size="small"
+              :disabled="!importData.length"
+              @click="runStockCheck"
+            >
+              验库存
+            </ElButton>
             <HelpTip
               inline
-              title="Excel 列说明"
-              content="列：主体编码/名称、渠道编码/名称、仓库编码或名称(逗号分隔)、商品编码/名称、数量、备注。编码或名称填一个即可。提交时按行归属自动拆成多张要货单；仓库列可空=该渠道全部绑定仓。"
-            />
-            <ElButton size="small" @click="runStockCheck">验库存</ElButton>
-            <HelpTip
-              inline
-              title="验库存说明"
-              content="验库存仅供参考，不拦截提交。缺货也可直接提交要货单。未导入数据时点击会提示先导入。"
+              title="说明"
+              content="先下载模板填写渠道与 SKU，导入后会弹出预览确认。验库存仅供参考、不拦提交。编码或名称填一个即可。"
             />
           </div>
         </div>
@@ -974,14 +972,16 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
             </template>
           </ElTableColumn>
         </ElTable>
-        <div v-else class="import-empty">
-          <ElEmpty :image-size="64">
-            <template #description>
-              <p class="list-empty__desc">请先下载模板，按规范填写渠道及 SKU 数量后上传</p>
-            </template>
-            <ElButton type="warning" size="small" plain @click="downloadDemandTemplate">下载要货模板</ElButton>
+        <div v-else class="import-drop">
+          <p class="import-drop__text">
+            先下载模板，按规范填写渠道及 SKU 数量后上传；导入后会弹出预览供核对。
+          </p>
+          <div class="import-drop__actions">
+            <ElButton type="warning" size="small" class="btn-template" @click="downloadDemandTemplate">
+              ⬇ 下载要货模板
+            </ElButton>
             <ElButton type="primary" size="small" @click="triggerFile(demandFileRef)">导入 Excel</ElButton>
-          </ElEmpty>
+          </div>
         </div>
       </div>
 
@@ -1166,6 +1166,60 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
   color: #b45309;
 }
 
+.period-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.period-start {
+  width: 160px !important;
+  max-width: 100%;
+}
+
+.period-sep {
+  font-size: 13px;
+  color: var(--erp-text-muted);
+}
+
+.period-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 1px solid var(--erp-border, #e5e7eb);
+  background: #f3f4f6;
+  color: #6b7280;
+  cursor: default;
+  user-select: none;
+}
+
+.period-end__date {
+  font-size: 13px;
+  font-weight: 600;
+  color: #4b5563;
+}
+
+.period-end__tag {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  color: #6b7280;
+}
+
+.period-hint {
+  width: 100%;
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--erp-text-muted, #909399);
+}
+
 .detail-meta {
   font-size: 13px;
   color: var(--erp-text-muted);
@@ -1282,25 +1336,29 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
 }
 
 .import-guide {
-  margin-bottom: 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: linear-gradient(90deg, #fff7ed 0%, #fffbeb 100%);
-  border: 1px solid #fed7aa;
+  display: none;
 }
 
-.import-guide__title {
+.import-drop {
+  padding: 28px 16px;
+  text-align: center;
+  border: 1px dashed #d1d5db;
+  border-radius: 10px;
+  background: #fafbfc;
+}
+
+.import-drop__text {
+  margin: 0 0 14px;
   font-size: 13px;
-  font-weight: 700;
-  color: #9a3412;
-  margin-bottom: 4px;
+  line-height: 1.55;
+  color: var(--erp-text-muted, #909399);
 }
 
-.import-guide__text {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.55;
-  color: #9a3412;
+.import-drop__actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .btn-template {
