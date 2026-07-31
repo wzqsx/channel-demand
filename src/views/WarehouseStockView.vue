@@ -667,15 +667,20 @@ const sortHeaderClass = (key: string) => {
 };
 
 const displayRows = computed(() => {
-  const rows = [...filteredStocks.value];
+  const source = filteredStocks.value;
   const { key, order } = sortState.value;
-  if (!key || !order) return rows;
+  if (!key || !order) return source;
+  // 先算好排序键再比，避免 sort 比较里反复算缺口/箱规（几万行会卡死）
   const dir = order === 'ascending' ? 1 : -1;
-  rows.sort((a, b) => {
-    const r = compareSortValues(sortValueOf(a, key), sortValueOf(b, key));
-    return r === 0 ? String(a.id).localeCompare(String(b.id)) : r * dir;
+  const decorated = new Array<{ r: WarehouseStock; v: string | number }>(source.length);
+  for (let i = 0; i < source.length; i++) {
+    decorated[i] = { r: source[i], v: sortValueOf(source[i], key) };
+  }
+  decorated.sort((a, b) => {
+    const r = compareSortValues(a.v, b.v);
+    return r === 0 ? String(a.r.id).localeCompare(String(b.r.id)) : r * dir;
   });
-  return rows;
+  return decorated.map(d => d.r);
 });
 
 const page = ref(1);
@@ -686,6 +691,37 @@ const pagedRows = computed(() => {
   return displayRows.value.slice(start, start + pageSize.value);
 });
 const rowIndexBase = computed(() => (page.value - 1) * pageSize.value);
+
+/** 仅缓存当前页缺口/状态，模板不再对同一行反复重算 */
+const pageRowMeta = computed(() => {
+  const m = new Map<
+    string,
+    { demand: number; available: number; gap: number; balance: number; status: ReturnType<typeof stockStatusOf> }
+  >();
+  for (const row of pagedRows.value) {
+    const demand = getDemandQty(row);
+    const available = getAvailableForGap(row);
+    const gap = Math.max(0, Math.round((demand - available) * 1000) / 1000);
+    const balance = Math.round((available - demand) * 1000) / 1000;
+    m.set(row.id, {
+      demand,
+      available,
+      gap,
+      balance,
+      status: getStockStatus(row.productCode, row.stock, row.inTransitStock, demand, available),
+    });
+  }
+  return m;
+});
+
+const metaOf = (row: WarehouseStock) =>
+  pageRowMeta.value.get(row.id) || {
+    demand: getDemandQty(row),
+    available: getAvailableForGap(row),
+    gap: getGapQty(row),
+    balance: getBalanceQty(row),
+    status: stockStatusOf(row),
+  };
 
 watch([searchCompanyIds, searchWarehouseIds, () => sortState.value.key, () => sortState.value.order], () => {
   page.value = 1;
@@ -915,7 +951,7 @@ const handleFieldDelete = (key: string) => {
       stripe
       class="erp-data-table stock-table"
       height="100%"
-      :row-class-name="({ row }: { row: WarehouseStock }) => (getGapQty(row) > 0 ? 'stock-row--alert' : '')"
+      :row-class-name="({ row }: { row: WarehouseStock }) => (metaOf(row).gap > 0 ? 'stock-row--alert' : '')"
     >
       <ElTableColumn width="52" fixed="left" align="center" class-name="col-gear-cell">
         <template #header>
@@ -977,8 +1013,8 @@ const handleFieldDelete = (key: string) => {
             <span
               :class="{
                 'stock-warning':
-                  stockStatusOf(row as WarehouseStock).type === 'danger' ||
-                  stockStatusOf(row as WarehouseStock).type === 'warning',
+                  metaOf(row as WarehouseStock).status.type === 'danger' ||
+                  metaOf(row as WarehouseStock).status.type === 'warning',
               }"
             >
               {{ formatProductQty(bottlesOf(row as WarehouseStock), (row as WarehouseStock).productCode) }}
@@ -1005,48 +1041,48 @@ const handleFieldDelete = (key: string) => {
             {{ availableOf(row as WarehouseStock) }}
           </template>
           <template v-else-if="col.key === 'demandDisp'">
-            <span :class="{ 'muted-zero': !getDemandQty(row as WarehouseStock) }">
+            <span :class="{ 'muted-zero': !metaOf(row as WarehouseStock).demand }">
               {{
-                getDemandQty(row as WarehouseStock)
-                  ? formatProductQty(getDemandQty(row as WarehouseStock), (row as WarehouseStock).productCode)
+                metaOf(row as WarehouseStock).demand
+                  ? formatProductQty(metaOf(row as WarehouseStock).demand, (row as WarehouseStock).productCode)
                   : '—'
               }}
             </span>
           </template>
           <template v-else-if="col.key === 'demandBottle'">
-            {{ getDemandQty(row as WarehouseStock) || '—' }}
+            {{ metaOf(row as WarehouseStock).demand || '—' }}
           </template>
           <template v-else-if="col.key === 'gapDisp'">
-            <span :class="{ 'stock-warning': getGapQty(row as WarehouseStock) > 0 }">
+            <span :class="{ 'stock-warning': metaOf(row as WarehouseStock).gap > 0 }">
               {{
-                getGapQty(row as WarehouseStock) > 0
-                  ? formatProductQty(getGapQty(row as WarehouseStock), (row as WarehouseStock).productCode)
+                metaOf(row as WarehouseStock).gap > 0
+                  ? formatProductQty(metaOf(row as WarehouseStock).gap, (row as WarehouseStock).productCode)
                   : '—'
               }}
             </span>
           </template>
           <template v-else-if="col.key === 'gapBottle'">
-            <span :class="{ 'stock-warning': getGapQty(row as WarehouseStock) > 0 }">
-              {{ getGapQty(row as WarehouseStock) || '—' }}
+            <span :class="{ 'stock-warning': metaOf(row as WarehouseStock).gap > 0 }">
+              {{ metaOf(row as WarehouseStock).gap || '—' }}
             </span>
           </template>
           <template v-else-if="col.key === 'balanceDisp'">
             <span
               :class="{
-                'stock-warning': getBalanceQty(row as WarehouseStock) < 0,
-                'balance-ok': getBalanceQty(row as WarehouseStock) >= 0 && getDemandQty(row as WarehouseStock) > 0,
+                'stock-warning': metaOf(row as WarehouseStock).balance < 0,
+                'balance-ok': metaOf(row as WarehouseStock).balance >= 0 && metaOf(row as WarehouseStock).demand > 0,
               }"
             >
               {{
-                getDemandQty(row as WarehouseStock)
-                  ? formatProductQty(getBalanceQty(row as WarehouseStock), (row as WarehouseStock).productCode)
+                metaOf(row as WarehouseStock).demand
+                  ? formatProductQty(metaOf(row as WarehouseStock).balance, (row as WarehouseStock).productCode)
                   : '—'
               }}
             </span>
           </template>
           <template v-else-if="col.key === 'status'">
-            <ElTag :type="stockStatusOf(row as WarehouseStock).type">
-              {{ stockStatusOf(row as WarehouseStock).text }}
+            <ElTag :type="metaOf(row as WarehouseStock).status.type">
+              {{ metaOf(row as WarehouseStock).status.text }}
             </ElTag>
           </template>
           <template v-else-if="isCustomCol(col.key)">

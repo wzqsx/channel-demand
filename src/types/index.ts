@@ -120,6 +120,8 @@ export interface StockSnapshot {
   /** 关联周起始（可选） */
   weekStart?: string;
   stocks: WarehouseStock[];
+  /** 创建时缓存的库存数量合计，避免列表反复 reduce */
+  totalQty?: number;
 }
 
 /** 要货 vs 实际销货对比行 */

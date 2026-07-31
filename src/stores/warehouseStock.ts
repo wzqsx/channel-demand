@@ -111,6 +111,8 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   /** shallow：大表不做逐行深层响应，避免打开页面卡死 */
   const stocks = shallowRef<WarehouseStock[]>([]);
   const productWhIndex = shallowRef(new Map<string, Map<string, WhAgg>>());
+  /** warehouseId__productCode → 行，单行改删 O(1) */
+  const rowByKey = shallowRef(new Map<string, WarehouseStock>());
   const customFields = ref<CustomFieldConfig[]>([]);
   const hydrated = ref(false);
   const importing = ref(false);
@@ -123,6 +125,36 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
 
   const rebuildIndex = (list: WarehouseStock[]) => {
     productWhIndex.value = buildProductWhIndex(list);
+    const keys = new Map<string, WarehouseStock>();
+    for (let i = 0; i < list.length; i++) {
+      const s = list[i];
+      keys.set(stockKey(s.warehouseId, s.productCode), s);
+    }
+    rowByKey.value = keys;
+  };
+
+  const bumpIndexCell = (
+    productCode: string,
+    warehouseId: string,
+    dStock: number,
+    dInTransit: number,
+  ) => {
+    const index = productWhIndex.value;
+    let wm = index.get(productCode);
+    if (!wm) {
+      wm = new Map();
+      index.set(productCode, wm);
+    }
+    const cur = wm.get(warehouseId) || { stock: 0, inTransit: 0 };
+    const next = {
+      stock: cur.stock + dStock,
+      inTransit: cur.inTransit + dInTransit,
+    };
+    if (next.stock === 0 && next.inTransit === 0) wm.delete(warehouseId);
+    else wm.set(warehouseId, next);
+    if (wm.size === 0) index.delete(productCode);
+    // 触发浅层订阅
+    productWhIndex.value = new Map(index);
   };
 
   const scheduleSave = () => {
@@ -272,11 +304,19 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   const getStocksByWarehouse = (warehouseId: string) =>
     stocks.value.filter(s => s.warehouseId === warehouseId);
 
-  const getStocksByProduct = (productCode: string) =>
-    stocks.value.filter(s => s.productCode === productCode);
+  const getStocksByProduct = (productCode: string) => {
+    const wm = productWhIndex.value.get(productCode);
+    if (!wm) return [] as WarehouseStock[];
+    const out: WarehouseStock[] = [];
+    for (const whId of wm.keys()) {
+      const row = rowByKey.value.get(stockKey(whId, productCode));
+      if (row) out.push(row);
+    }
+    return out;
+  };
 
   const getStock = (warehouseId: string, productCode: string) =>
-    stocks.value.find(s => s.warehouseId === warehouseId && s.productCode === productCode);
+    rowByKey.value.get(stockKey(warehouseId, productCode));
 
   const getTotalStock = (productCode: string, warehouseIds?: string[]) =>
     sumFromIndex(productWhIndex.value, productCode, warehouseIds).stock;
@@ -310,6 +350,19 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     return false;
   };
 
+  const countByProduct = (productCode: string) => {
+    const wm = productWhIndex.value.get(productCode);
+    return wm ? wm.size : 0;
+  };
+
+  const countByWarehouse = (warehouseId: string) => {
+    let n = 0;
+    for (const s of stocks.value) {
+      if (s.warehouseId === warehouseId) n += 1;
+    }
+    return n;
+  };
+
   const upsertStock = (
     warehouseId: string,
     productCode: string,
@@ -317,22 +370,30 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     inTransitStock: number = 0,
     fields?: Record<string, any>,
   ) => {
-    const index = stocks.value.findIndex(
-      s => s.warehouseId === warehouseId && s.productCode === productCode,
-    );
+    const key = stockKey(warehouseId, productCode);
+    const prev = rowByKey.value.get(key);
     let row: WarehouseStock;
-    if (index !== -1) {
-      const next = stocks.value.slice();
-      const cur = next[index];
+    if (prev) {
+      bumpIndexCell(
+        productCode,
+        warehouseId,
+        (Number(stock) || 0) - prev.stock,
+        (Number(inTransitStock) || 0) - prev.inTransitStock,
+      );
       row = normalizeRow({
-        ...cur,
+        ...prev,
         stock,
         inTransitStock,
-        customFields: fields !== undefined ? fields : cur.customFields,
+        customFields: fields !== undefined ? fields : prev.customFields,
       });
-      next[index] = row;
+      const next = stocks.value.slice();
+      const idx = next.findIndex(s => s.warehouseId === warehouseId && s.productCode === productCode);
+      if (idx >= 0) next[idx] = row;
+      else next.push(row);
       stocks.value = next;
-      rebuildIndex(next);
+      const keys = new Map(rowByKey.value);
+      keys.set(key, row);
+      rowByKey.value = keys;
     } else {
       row = normalizeRow({
         id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
@@ -342,20 +403,26 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
         inTransitStock,
         customFields: fields,
       });
-      const next = [...stocks.value, row];
-      stocks.value = next;
-      rebuildIndex(next);
+      bumpIndexCell(productCode, warehouseId, row.stock, row.inTransitStock);
+      stocks.value = [...stocks.value, row];
+      const keys = new Map(rowByKey.value);
+      keys.set(key, row);
+      rowByKey.value = keys;
     }
     if (useSqlite.value) {
-      // 只写库，不再全量回读（大表回读会把界面卡死）
       void stockDbUpsert(row).catch(e => console.error('SQLite upsert 失败', e));
     }
   };
 
   const deleteStock = (id: string) => {
+    const prev = stocks.value.find(s => s.id === id);
+    if (!prev) return;
+    bumpIndexCell(prev.productCode, prev.warehouseId, -prev.stock, -prev.inTransitStock);
     const next = stocks.value.filter(s => s.id !== id);
     stocks.value = next;
-    rebuildIndex(next);
+    const keys = new Map(rowByKey.value);
+    keys.delete(stockKey(prev.warehouseId, prev.productCode));
+    rowByKey.value = keys;
     if (useSqlite.value) {
       void stockDbDelete(id).catch(e => console.error('SQLite delete 失败', e));
     }
@@ -546,8 +613,8 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
           customFields: built.nextCustom,
           reason: description || `${replaceAll ? '全量替换' : '增量导入'} · ${week}`,
         });
-        const loaded = await stockDbLoad();
-        applyLoaded(loaded.stocks || [], loaded.customFields || built.nextCustom);
+        // 大单量：直接用本地整理结果更新内存，禁止再全表 HTTP 回读
+        applyLoaded(built.rows, built.nextCustom);
         onProgress?.(data.length, data.length, '完成');
         return {
           imported: result.imported,
@@ -653,6 +720,7 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   return {
     stocks,
     productWhIndex,
+    rowByKey,
     customFields,
     hydrated,
     importing,
@@ -669,6 +737,8 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     getAvailableStock,
     getAvailableStockByWarehouses,
     hasAnyStockRows,
+    countByProduct,
+    countByWarehouse,
     upsertStock,
     deleteStock,
     setCustomFields,

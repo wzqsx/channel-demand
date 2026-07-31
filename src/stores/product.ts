@@ -11,6 +11,31 @@ function snapWarningToWholeBoxes(warningBottles: number, bottlesPerBox: number):
 export const useProductStore = defineStore('product', () => {
   const products = ref<Product[]>([]);
 
+  /** 编码 → 商品；热路径 O(1) */
+  const byCode = computed(() => {
+    const m = new Map<string, Product>();
+    for (const p of products.value) m.set(p.code, p);
+    return m;
+  });
+
+  /** 瓶规编码 → 箱规列表 */
+  const packsByBase = computed(() => {
+    const m = new Map<string, Product[]>();
+    for (const p of products.value) {
+      if (
+        p.isCombined
+        && p.combineProductCode
+        && p.combineRatio > 0
+        && p.code !== p.combineProductCode
+      ) {
+        const list = m.get(p.combineProductCode) || [];
+        list.push(p);
+        m.set(p.combineProductCode, list);
+      }
+    }
+    return m;
+  });
+
   // 如果已有数据，不再初始化种子；但纠正组合品「每箱瓶数≠换算比例」与单位冲突
   const initProducts = () => {
     if (products.value.length > 0) {
@@ -134,9 +159,9 @@ export const useProductStore = defineStore('product', () => {
     }
   };
 
-  const getProductByCode = (code: string) => {
-    return products.value.find(p => p.code === code);
-  };
+  const getProductByCode = (code: string) => byCode.value.get(code);
+
+  const getPackProductsForBase = (baseCode: string) => packsByBase.value.get(baseCode) || [];
 
   const upsertByCode = (data: Omit<Product, 'id'>) => {
     const existing = getProductByCode(data.code);
@@ -166,6 +191,8 @@ export const useProductStore = defineStore('product', () => {
 
   return {
     products,
+    byCode,
+    packsByBase,
     warningProducts,
     warningCount,
     isWarning,
@@ -176,6 +203,7 @@ export const useProductStore = defineStore('product', () => {
     updateProduct,
     deleteProduct,
     getProductByCode,
+    getPackProductsForBase,
     upsertByCode,
     batchUpdate,
   };

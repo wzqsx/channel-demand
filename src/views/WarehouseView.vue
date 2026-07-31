@@ -195,7 +195,7 @@ const handleSubmit = () => {
 const warehouseRefCount = (id: string) => {
   const channels = channelStore.channels.filter(c => (c.warehouseIds || []).includes(id)).length;
   const reqs = requisitionStore.requisitions.filter(r => (r.warehouseIds || []).includes(id)).length;
-  const stocks = stockStore.stocks.filter(s => s.warehouseId === id).length;
+  const stocks = stockStore.countByWarehouse(id);
   return { channels, reqs, stocks };
 };
 

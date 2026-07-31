@@ -235,7 +235,7 @@ const handleDelete = async (id: string) => {
   const product = store.products.find(p => p.id === id);
   const code = product?.code || '';
   const stockN = code
-    ? stockStore.stocks.filter(s => s.productCode === code).length
+    ? stockStore.countByProduct(code)
     : 0;
   const reqN = code
     ? requisitionStore.requisitions.filter(r => r.items.some(i => i.productCode === code)).length

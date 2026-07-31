@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import {
   ElTable,
@@ -8,6 +8,7 @@ import {
   ElDialog,
   ElMessage,
   ElMessageBox,
+  ElPagination,
 } from 'element-plus';
 import PageShell from '../components/PageShell.vue';
 import { useStockSnapshotStore } from '../stores/stockSnapshot';
@@ -17,6 +18,7 @@ import { useWarehouseStockStore } from '../stores/warehouseStock';
 import { bootstrapStores } from '../stores/bootstrap';
 import type { StockSnapshot, WarehouseStock } from '../types';
 import { exportRows } from '../utils/excel';
+import { UI_PAGE_SIZE } from '../utils/largeScale';
 
 const snapshotStore = useStockSnapshotStore();
 const warehouseStore = useWarehouseStore();
@@ -26,8 +28,21 @@ const stockStore = useWarehouseStockStore();
 const { snapshots } = storeToRefs(snapshotStore);
 const showDetailDialog = ref(false);
 const selectedSnapshot = ref<StockSnapshot | null>(null);
+const detailPage = ref(1);
+const detailPageSize = ref(UI_PAGE_SIZE);
 
 const hasWeekStart = computed(() => snapshots.value.some(s => !!s.weekStart));
+
+const detailTotal = computed(() => selectedSnapshot.value?.stocks.length || 0);
+const detailRows = computed(() => {
+  const all = selectedSnapshot.value?.stocks || [];
+  const start = (detailPage.value - 1) * detailPageSize.value;
+  return all.slice(start, start + detailPageSize.value);
+});
+
+watch(showDetailDialog, open => {
+  if (open) detailPage.value = 1;
+});
 
 onMounted(() => {
   bootstrapStores();
@@ -37,9 +52,8 @@ const formatTime = (time: string) => {
   return new Date(time).toLocaleString('zh-CN');
 };
 
-const getTotalStockCount = (stocks: WarehouseStock[]) => {
-  return stocks.reduce((sum, s) => sum + s.stock, 0);
-};
+const getTotalStockCount = (snap: StockSnapshot) =>
+  snap.totalQty ?? snap.stocks.reduce((sum, s) => sum + s.stock, 0);
 
 const getProductName = (code: string) => {
   const product = productStore.getProductByCode(code);
@@ -63,6 +77,7 @@ const getProductUnit = (code: string) => {
 
 const viewSnapshot = (snapshot: StockSnapshot) => {
   selectedSnapshot.value = snapshot;
+  detailPage.value = 1;
   showDetailDialog.value = true;
 };
 
@@ -102,7 +117,7 @@ const handleExportList = () => {
       周起始: s.weekStart || '',
       备份描述: s.description,
       库存记录数: s.stocks.length,
-      总库存数量: getTotalStockCount(s.stocks),
+      总库存数量: getTotalStockCount(s),
     })),
     '库存历史快照列表',
   );
@@ -132,7 +147,7 @@ const handleExportDetail = () => {
 <template>
   <PageShell
     title="库存历史记录"
-    help="每次导入/替换库存时会自动备份，可查看历史数据和恢复"
+    help="每次导入/替换库存时会自动备份，可查看历史数据和恢复。大表明细分页展示，避免卡死。"
   >
     <template #toolbar>
       <ElButton size="small" @click="handleExportList">导出快照列表</ElButton>
@@ -179,10 +194,10 @@ const handleExportDetail = () => {
           width="110"
           align="center"
           sortable
-          :sort-method="(a: StockSnapshot, b: StockSnapshot) => getTotalStockCount(a.stocks) - getTotalStockCount(b.stocks)"
+          :sort-method="(a: StockSnapshot, b: StockSnapshot) => getTotalStockCount(a) - getTotalStockCount(b)"
         >
           <template #default="{ row }">
-            {{ getTotalStockCount((row as StockSnapshot).stocks) }}
+            {{ getTotalStockCount(row as StockSnapshot) }}
           </template>
         </ElTableColumn>
         <ElTableColumn label="操作" width="220" fixed="right">
@@ -196,25 +211,15 @@ const handleExportDetail = () => {
     </div>
 
     <ElDialog v-model="showDetailDialog" :title="`库存快照 - ${selectedSnapshot?.description}`" width="900px">
-      <ElTable :data="selectedSnapshot?.stocks" border size="small">
-        <ElTableColumn type="index" label="序号" width="55" />
-        <ElTableColumn
-          label="仓库"
-          width="100"
-          sortable
-          :sort-method="(a: WarehouseStock, b: WarehouseStock) => getWarehouseName(a.warehouseId).localeCompare(getWarehouseName(b.warehouseId), 'zh-CN')"
-        >
+      <ElTable :data="detailRows" border size="small" max-height="480">
+        <ElTableColumn type="index" label="序号" width="55" :index="(i: number) => (detailPage - 1) * detailPageSize + i + 1" />
+        <ElTableColumn label="仓库" width="100">
           <template #default="{ row }">
             {{ getWarehouseName((row as WarehouseStock).warehouseId) }}
           </template>
         </ElTableColumn>
-        <ElTableColumn prop="productCode" label="商品编码" width="100" sortable />
-        <ElTableColumn
-          label="商品名称"
-          width="150"
-          sortable
-          :sort-method="(a: WarehouseStock, b: WarehouseStock) => getProductName(a.productCode).localeCompare(getProductName(b.productCode), 'zh-CN')"
-        >
+        <ElTableColumn prop="productCode" label="商品编码" width="100" />
+        <ElTableColumn label="商品名称" width="150">
           <template #default="{ row }">
             {{ getProductName((row as WarehouseStock).productCode) }}
           </template>
@@ -224,27 +229,32 @@ const handleExportDetail = () => {
             {{ getProductSpec((row as WarehouseStock).productCode) }}
           </template>
         </ElTableColumn>
-        <ElTableColumn prop="stock" label="库存数量" width="120" sortable>
+        <ElTableColumn prop="stock" label="库存数量" width="120">
           <template #default="{ row }">
             {{ (row as WarehouseStock).stock }} {{ getProductUnit((row as WarehouseStock).productCode) }}
           </template>
         </ElTableColumn>
-        <ElTableColumn prop="inTransitStock" label="在途库存" width="120" sortable>
+        <ElTableColumn prop="inTransitStock" label="在途库存" width="120">
           <template #default="{ row }">
             {{ (row as WarehouseStock).inTransitStock }} {{ getProductUnit((row as WarehouseStock).productCode) }}
           </template>
         </ElTableColumn>
-        <ElTableColumn
-          label="可用库存"
-          width="120"
-          sortable
-          :sort-method="(a: WarehouseStock, b: WarehouseStock) => (a.stock + a.inTransitStock) - (b.stock + b.inTransitStock)"
-        >
+        <ElTableColumn label="可用库存" width="120">
           <template #default="{ row }">
             {{ (row as WarehouseStock).stock + (row as WarehouseStock).inTransitStock }} {{ getProductUnit((row as WarehouseStock).productCode) }}
           </template>
         </ElTableColumn>
       </ElTable>
+      <div class="detail-pager">
+        <ElPagination
+          v-model:current-page="detailPage"
+          v-model:page-size="detailPageSize"
+          layout="total, prev, pager, next, sizes"
+          :total="detailTotal"
+          :page-sizes="[50, 100, 200, 500]"
+          small
+        />
+      </div>
       <template #footer>
         <ElButton size="small" @click="showDetailDialog = false">关闭</ElButton>
         <ElButton size="small" @click="handleExportDetail">导出明细</ElButton>
@@ -260,5 +270,10 @@ const handleExportDetail = () => {
   min-height: 0;
   padding: 0 12px;
   overflow: hidden;
+}
+.detail-pager {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
 }
 </style>

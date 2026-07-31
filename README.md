@@ -4,6 +4,7 @@
 
 - 技术栈：Vue 3 · TypeScript · Vite · Pinia · Element Plus
 - 数据：主数据在浏览器 `localStorage`；**库存**优先写入本机 **SQLite**（`data/stock.db`），服务未启动时回退 IndexedDB
+- **大单量内建**：几万行库存走索引查询、浅层响应、表格分页；导入/缺货/快照按此量级设计，不必再零碎打补丁
 - 启动：`npm run dev`（同时开 SQLite 服务 :8787 + 前端）
 - **要求 Node.js 22+**（用到内置 `node:sqlite`；`node -v` 看主版本号）
 - 仅前端：`npm run dev:web`；仅库存库：`npm run server`

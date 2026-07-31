@@ -2,16 +2,9 @@ import { useProductStore } from '../stores/product';
 import { useWarehouseStockStore } from '../stores/warehouseStock';
 import type { Product } from '../types';
 
-/** 指向某瓶规基础编码的箱规/组合商品 */
+/** 指向某瓶规基础编码的箱规/组合商品（走商品 packs 索引） */
 export function getPackProductsForBase(baseCode: string): Product[] {
-  const productStore = useProductStore();
-  return productStore.products.filter(
-    p =>
-      p.isCombined
-      && p.combineProductCode === baseCode
-      && p.combineRatio > 0
-      && p.code !== baseCode,
-  );
+  return useProductStore().getPackProductsForBase(baseCode);
 }
 
 /**

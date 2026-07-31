@@ -257,10 +257,18 @@ export function buildShortageAndWarnings(opts: {
       const wkey = `${companyId}__${product.code}`;
       if (seenWarning.has(wkey) || shortageKeys.has(wkey)) continue;
 
+      const packCodes = (packsByBase.get(product.code) || []).map(p => p.code);
+      // 预警阈值为 0 且该仓无库存行：直接跳过，避免无意义的折算
+      if (
+        product.warningThreshold <= 0
+        && !hasAnyRows(index, [product.code, ...packCodes], companyWhIds)
+      ) {
+        continue;
+      }
+
       const eq = bottleEq(index, packsByBase, product.code, companyWhIds);
       if (eq.availableStock > product.warningThreshold) continue;
 
-      const packCodes = (packsByBase.get(product.code) || []).map(p => p.code);
       const hasStockRow = hasAnyRows(
         index,
         [product.code, ...packCodes],

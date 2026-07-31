@@ -143,6 +143,7 @@ export const useRequisitionStore = defineStore('requisition', () => {
   /**
    * 同主体更高优先级渠道的占用（待审批+已通过；仓库有交集才算竞争同一库存池）
    * 不含当前渠道自身已提报量。停用渠道不参与。
+   * 一次扫要货列表累加，避免 items 多次 flatMap。
    */
   const getHigherPriorityPendingDemand = (
     productCode: string,
@@ -152,18 +153,22 @@ export const useRequisitionStore = defineStore('requisition', () => {
   ) => {
     const channelStore = useChannelStore();
     const higher = channelStore.getHigherPriorityChannels(channelId, companyId);
+    if (!higher.length) return 0;
     const higherIds = new Set(higher.map(c => c.id));
-    return requisitions.value
-      .filter(
-        r =>
-          (r.status === 'pending' || r.status === 'approved') &&
-          higherIds.has(r.channelId) &&
-          (!companyId || r.companyId === companyId) &&
-          overlaps(r.warehouseIds, warehouseIds),
-      )
-      .flatMap(r => r.items)
-      .filter(item => item.productCode === productCode)
-      .reduce((sum, item) => sum + item.quantity, 0);
+    let sum = 0;
+    const list = requisitions.value;
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i];
+      if (r.status !== 'pending' && r.status !== 'approved') continue;
+      if (!higherIds.has(r.channelId)) continue;
+      if (companyId && r.companyId !== companyId) continue;
+      if (!overlaps(r.warehouseIds, warehouseIds)) continue;
+      const items = r.items;
+      for (let j = 0; j < items.length; j++) {
+        if (items[j].productCode === productCode) sum += items[j].quantity;
+      }
+    }
+    return sum;
   };
 
   const checkStockAvailability = (
