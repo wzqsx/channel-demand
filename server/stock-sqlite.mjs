@@ -2,16 +2,35 @@
  * 本地库存 SQLite 服务（Node 内置 node:sqlite，无需 MySQL）。
  * 启动：npm run server
  * 默认：http://127.0.0.1:8787
+ * 要求：Node.js 22.5+
  */
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DatabaseSync } from 'node:sqlite';
+
+const major = Number(process.versions.node.split('.')[0] || 0);
+if (major < 22) {
+  console.error(
+    `[stock-sqlite] 需要 Node.js 22+（当前 ${process.versions.node}）。请升级后再启动。`,
+  );
+  process.exit(1);
+}
+
+let DatabaseSync;
+try {
+  ({ DatabaseSync } = await import('node:sqlite'));
+} catch (e) {
+  console.error('[stock-sqlite] 无法加载 node:sqlite：', e?.message || e);
+  console.error('请使用 Node.js 22.5+。');
+  process.exit(1);
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const DATA_DIR = path.join(ROOT, 'data');
+const DATA_DIR = process.env.STOCK_DATA_DIR
+  ? path.resolve(process.env.STOCK_DATA_DIR)
+  : path.join(ROOT, 'data');
 const DB_PATH = path.join(DATA_DIR, 'stock.db');
 const PORT = Number(process.env.STOCK_API_PORT || 8787);
 const HOST = process.env.STOCK_API_HOST || '127.0.0.1';
@@ -241,10 +260,12 @@ function importRows(body) {
   const rows = Array.isArray(body.rows) ? body.rows : [];
   const customFields = body.customFields;
   const reason = String(body.reason || 'import');
+  // 单行 upsert 不做全表备份（否则每次改一行都卡）
+  const skipBackup = reason === 'upsert' || body.skipBackup === true;
 
   const existing = Number(db.prepare('SELECT COUNT(*) AS c FROM stocks').get()?.c || 0);
   let backupMeta = null;
-  if (existing > 0) {
+  if (existing > 0 && !skipBackup) {
     backupMeta = backupNow(reason);
   }
 
@@ -371,8 +392,9 @@ const server = http.createServer(async (req, res) => {
         replaceAll: false,
         rows: [body],
         reason: 'upsert',
+        skipBackup: true,
       });
-      return json(res, 200, { ...result, stocks: getAllStocks() });
+      return json(res, 200, { ok: true, imported: result.imported });
     }
 
     if (req.method === 'DELETE' && p.startsWith('/api/stocks/')) {

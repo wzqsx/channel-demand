@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "scripts": {
     "dev": "node scripts/dev-all.mjs",
     "dev:web": "vite",
@@ -10,6 +13,7 @@
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
     "selfcheck": "npx vite-node scripts/selfcheck.mjs",
+    "smoke:stock": "node scripts/smoke-stock.mjs",
     "autostart:on": "bash scripts/macos-autostart-install.sh",
     "autostart:off": "bash scripts/macos-autostart-uninstall.sh"
   },

@@ -5,12 +5,13 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   plugins: [vue()],
   server: {
+    // 开发态前端默认直连 :8787；代理仅作兜底，超时放宽避免大表被掐断
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:8787',
         changeOrigin: true,
-        timeout: 2000,
-        proxyTimeout: 2000,
+        timeout: 300000,
+        proxyTimeout: 300000,
       },
     },
   },

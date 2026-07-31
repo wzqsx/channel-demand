@@ -1,12 +1,22 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
+import { storeToRefs } from 'pinia';
 import { ElButton, ElMessage, ElMessageBox, ElDropdown, ElDropdownMenu, ElDropdownItem } from 'element-plus';
 import { downloadAppDataBackup, importAppDataBackup } from './utils/dataBackup';
+import { useWarehouseStockStore } from './stores/warehouseStock';
 
 const router = useRouter();
 const route = useRoute();
 const importInputRef = ref<HTMLInputElement | null>(null);
+const stockStore = useWarehouseStockStore();
+const { hydrated, useSqlite, importing } = storeToRefs(stockStore);
+
+const bootHint = computed(() => {
+  if (importing.value) return '正在导入库存，请稍候…';
+  if (!hydrated.value) return '正在加载库存数据…';
+  return '';
+});
 
 const menuGroups = [
   {
@@ -120,6 +130,9 @@ const handleImportFile = async (event: Event) => {
       <header class="topbar">
         <div class="topbar-title">{{ currentTitle }}</div>
         <div class="topbar-actions">
+          <span v-if="bootHint" class="boot-hint">{{ bootHint }}</span>
+          <span v-else-if="useSqlite" class="engine-hint" title="库存写入本机 SQLite">SQLite</span>
+          <span v-else class="engine-hint muted" title="库存写入浏览器">浏览器库</span>
           <input
             ref="importInputRef"
             type="file"
@@ -266,6 +279,30 @@ const handleImportFile = async (event: Event) => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.boot-hint {
+  font-size: 12px;
+  color: #b45309;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+
+.engine-hint {
+  font-size: 11px;
+  color: #047857;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+
+.engine-hint.muted {
+  color: #64748b;
+  background: #f8fafc;
+  border-color: #e2e8f0;
 }
 
 .dropdown-caret {

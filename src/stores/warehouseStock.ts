@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref, watch } from 'vue';
+import { markRaw, ref, shallowRef, watch } from 'vue';
 import type {
   WarehouseStock,
   ImportWarehouseStockData,
@@ -47,8 +47,17 @@ export type ImportStocksResult = {
   backend: 'sqlite' | 'idb';
 };
 
+function normalizeRow(s: WarehouseStock): WarehouseStock {
+  return markRaw({
+    ...s,
+    stock: Number(s.stock) || 0,
+    inTransitStock: Number(s.inTransitStock) || 0,
+  });
+}
+
 export const useWarehouseStockStore = defineStore('warehouseStock', () => {
-  const stocks = ref<WarehouseStock[]>([]);
+  /** shallow：大表不做逐行深层响应，避免打开页面卡死 */
+  const stocks = shallowRef<WarehouseStock[]>([]);
   const customFields = ref<CustomFieldConfig[]>([]);
   const hydrated = ref(false);
   const importing = ref(false);
@@ -94,11 +103,7 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     nextStocks: WarehouseStock[],
     nextFields: CustomFieldConfig[],
   ) => {
-    stocks.value = nextStocks.map(s => ({
-      ...s,
-      stock: Number(s.stock) || 0,
-      inTransitStock: Number(s.inTransitStock) || 0,
-    }));
+    stocks.value = (nextStocks || []).map(normalizeRow);
     customFields.value = nextFields || [];
   };
 
@@ -110,19 +115,23 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
         useSqlite.value = true;
         sqliteDbPath.value = health.dbPath || '';
         try {
+          // 大表 JSON 解析前让出主线程，避免首屏假死
+          await yieldToMain();
           const data = await stockDbLoad();
+          await yieldToMain();
           if ((data.stocks?.length || 0) === 0) {
             const idb = await loadStockPersist();
             const idbStocks = (idb?.stocks as WarehouseStock[]) || [];
             const idbFields = (idb?.customFields as CustomFieldConfig[]) || [];
             if (idbStocks.length > 0) {
-              // 小表同步迁；大表先用内存/稍后再迁，避免启动假死
+              // 先展示，再视大小决定同步/后台迁库
+              applyLoaded(idbStocks, idbFields);
+              hydrated.value = true;
               if (idbStocks.length <= 5000) {
                 await stockDbReplaceAll(idbStocks, idbFields);
                 const again = await stockDbLoad();
                 applyLoaded(again.stocks || [], again.customFields || []);
               } else {
-                applyLoaded(idbStocks, idbFields);
                 void stockDbReplaceAll(idbStocks, idbFields)
                   .then(async () => {
                     const again = await stockDbLoad();
@@ -177,12 +186,10 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   }, { deep: true });
 
   const initStocks = () => {
-    stocks.value = stocks.value.map(s => ({
-      ...s,
-      stock: Number(s.stock) || 0,
-      inTransitStock: Number(s.inTransitStock) || 0,
-    }));
-    if (stocks.value.length > 0) return;
+    if (stocks.value.length > 0) {
+      stocks.value = stocks.value.map(normalizeRow);
+      return;
+    }
     stocks.value = [
       { id: '1', warehouseId: 'W001', productCode: 'P001', stock: 200, inTransitStock: 50 },
       { id: '2', warehouseId: 'W001', productCode: 'P002', stock: 50, inTransitStock: 100 },
@@ -196,7 +203,7 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
       { id: '10', warehouseId: 'W006', productCode: 'P001', stock: 80, inTransitStock: 0 },
       { id: '11', warehouseId: 'W008', productCode: 'P001', stock: 60, inTransitStock: 10 },
       { id: '12', warehouseId: 'W001', productCode: 'P0012', stock: 5, inTransitStock: 0 },
-    ];
+    ].map(normalizeRow);
   };
 
   const getStocksByWarehouse = (warehouseId: string) =>
@@ -240,30 +247,28 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     if (index !== -1) {
       const next = stocks.value.slice();
       const cur = next[index];
-      row = {
+      row = normalizeRow({
         ...cur,
         stock,
         inTransitStock,
         customFields: fields !== undefined ? fields : cur.customFields,
-      };
+      });
       next[index] = row;
       stocks.value = next;
     } else {
-      row = {
+      row = normalizeRow({
         id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
         warehouseId,
         productCode,
         stock,
         inTransitStock,
         customFields: fields,
-      };
+      });
       stocks.value = [...stocks.value, row];
     }
     if (useSqlite.value) {
-      void stockDbUpsert(row).then(async () => {
-        const data = await stockDbLoad();
-        applyLoaded(data.stocks || [], data.customFields || customFields.value);
-      }).catch(e => console.error('SQLite upsert 失败', e));
+      // 只写库，不再全量回读（大表回读会把界面卡死）
+      void stockDbUpsert(row).catch(e => console.error('SQLite upsert 失败', e));
     }
   };
 

@@ -5,6 +5,7 @@
 - 技术栈：Vue 3 · TypeScript · Vite · Pinia · Element Plus
 - 数据：主数据在浏览器 `localStorage`；**库存**优先写入本机 **SQLite**（`data/stock.db`），服务未启动时回退 IndexedDB
 - 启动：`npm run dev`（同时开 SQLite 服务 :8787 + 前端）
+- **要求 Node.js 22+**（用到内置 `node:sqlite`；`node -v` 看主版本号）
 - 仅前端：`npm run dev:web`；仅库存库：`npm run server`
 - 备份库存：复制 `data/stock.db`（及同目录 `-wal`/`-shm` 若存在）即可
 
@@ -34,11 +35,18 @@ brew -v
 brew install node
 ```
 
-验证（必须能看到版本号，Node 建议 18+）：
+验证（**必须 Node 22+**，库存 SQLite 依赖内置模块）：
 
 ```bash
 node -v
 npm -v
+```
+
+若 `node -v` 小于 `v22`，请升级：
+
+```bash
+brew install node
+# 或打开 https://nodejs.org 安装最新 LTS，装完重开终端
 ```
 
 若出现 `command not found: npm`（或 `node`），说明 Node 还没装好，**先不要跑 autostart**，在本机终端按顺序执行：
@@ -120,6 +128,13 @@ npm run dev
 **http://localhost:5173/**
 
 若端口被占用，以终端打印的实际地址为准。
+
+打开后顶部应能点侧栏；若短暂显示「正在加载库存数据…」属正常。若整页完全点不动：
+
+1. 看终端是否打印 `[启动失败] … Node.js 22+` → 先升级 Node
+2. 强制刷新：`Cmd+Shift+R`
+3. 停掉旧进程后重开：`Ctrl+C`，再 `npm run dev`
+4. 确认打开的是终端里打印的地址（常见 `http://localhost:5173/`）
 
 ---
 

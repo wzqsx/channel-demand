@@ -33,11 +33,11 @@ async function start() {
   app.use(router);
   app.use(ElementPlus);
 
-  // 先挂载，避免库存/IDB/代理卡住时整页白屏点不了
+  // 先挂载，保证侧栏/菜单立刻可点；库存异步加载
   app.mount('#app');
 
   try {
-    await withTimeout(bootstrapStores(), 15000, '启动初始化');
+    await withTimeout(bootstrapStores(), 45000, '启动初始化');
   } catch (e) {
     console.error('启动初始化失败（页面仍可用，库存可能未就绪）', e);
   }

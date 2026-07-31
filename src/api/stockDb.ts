@@ -1,25 +1,43 @@
 /** 库存 SQLite 本地 API 客户端（服务未启动时返回 null，走浏览器兜底） */
 
-const DEFAULT_BASE = '';
-
 function baseUrl() {
-  // 开发：走 Vite 代理 /api；也可设 VITE_STOCK_API
-  return (import.meta.env.VITE_STOCK_API as string | undefined) || DEFAULT_BASE;
+  // 显式配置优先
+  const env = import.meta.env.VITE_STOCK_API as string | undefined;
+  if (env) return env.replace(/\/$/, '');
+  // 开发态直连 SQLite，绕过 Vite 代理短超时（否则大表加载/导入会被 2s 掐断）
+  if (import.meta.env.DEV) return 'http://127.0.0.1:8787';
+  return '';
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${baseUrl()}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers || {}),
-    },
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error((data as { message?: string }).message || `HTTP ${res.status}`);
+async function request<T>(
+  path: string,
+  init?: RequestInit & { timeoutMs?: number },
+): Promise<T> {
+  const timeoutMs = init?.timeoutMs ?? 15000;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const { timeoutMs: _drop, signal: userSignal, ...rest } = init || {};
+    if (userSignal) {
+      if (userSignal.aborted) ctrl.abort();
+      else userSignal.addEventListener('abort', () => ctrl.abort(), { once: true });
+    }
+    const res = await fetch(`${baseUrl()}${path}`, {
+      ...rest,
+      signal: ctrl.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(rest.headers || {}),
+      },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error((data as { message?: string }).message || `HTTP ${res.status}`);
+    }
+    return data as T;
+  } finally {
+    clearTimeout(t);
   }
-  return data as T;
 }
 
 export type StockDbHealth = {
@@ -30,29 +48,19 @@ export type StockDbHealth = {
 };
 
 export async function stockDbHealth(): Promise<StockDbHealth | null> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 600);
   try {
-    const data = await request<StockDbHealth>('/api/health', { signal: ctrl.signal });
+    const data = await request<StockDbHealth>('/api/health', { timeoutMs: 800 });
     return data?.ok ? data : null;
   } catch {
     return null;
-  } finally {
-    clearTimeout(t);
   }
 }
 
 export async function stockDbLoad() {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 60000);
-  try {
-    return await request<{
-      stocks: import('../types').WarehouseStock[];
-      customFields: import('../types').CustomFieldConfig[];
-    }>('/api/stocks', { signal: ctrl.signal });
-  } finally {
-    clearTimeout(t);
-  }
+  return request<{
+    stocks: import('../types').WarehouseStock[];
+    customFields: import('../types').CustomFieldConfig[];
+  }>('/api/stocks', { timeoutMs: 120000 });
 }
 
 export async function stockDbImport(body: {
@@ -81,6 +89,7 @@ export async function stockDbImport(body: {
   }>('/api/stocks/import', {
     method: 'POST',
     body: JSON.stringify(body),
+    timeoutMs: 300000,
   });
 }
 
@@ -92,15 +101,20 @@ export async function stockDbUpsert(row: {
   inTransitStock: number;
   customFields?: Record<string, unknown>;
 }) {
-  return request<{ stocks: import('../types').WarehouseStock[] }>('/api/stocks/upsert', {
-    method: 'POST',
-    body: JSON.stringify(row),
-  });
+  return request<{ ok?: boolean; stocks?: import('../types').WarehouseStock[] }>(
+    '/api/stocks/upsert',
+    {
+      method: 'POST',
+      body: JSON.stringify(row),
+      timeoutMs: 15000,
+    },
+  );
 }
 
 export async function stockDbDelete(id: string) {
   return request<{ ok: boolean }>(`/api/stocks/${encodeURIComponent(id)}`, {
     method: 'DELETE',
+    timeoutMs: 15000,
   });
 }
 
@@ -109,7 +123,7 @@ export async function stockDbBackupInfo() {
     available: boolean;
     meta: { at: string; rowCount: number; reason: string } | null;
     rowCount: number;
-  }>('/api/stocks/backup');
+  }>('/api/stocks/backup', { timeoutMs: 10000 });
 }
 
 export async function stockDbRestoreBackup() {
@@ -117,13 +131,18 @@ export async function stockDbRestoreBackup() {
     meta: { at: string; rowCount: number; reason: string };
     stocks: import('../types').WarehouseStock[];
     customFields: import('../types').CustomFieldConfig[];
-  }>('/api/stocks/restore-backup', { method: 'POST', body: '{}' });
+  }>('/api/stocks/restore-backup', {
+    method: 'POST',
+    body: '{}',
+    timeoutMs: 120000,
+  });
 }
 
 export async function stockDbFileBackup() {
   return request<{ path: string; fileName: string }>('/api/stocks/file-backup', {
     method: 'POST',
     body: '{}',
+    timeoutMs: 60000,
   });
 }
 
@@ -132,7 +151,11 @@ export async function stockDbSaveCustomFields(
 ) {
   return request<{ customFields: import('../types').CustomFieldConfig[] }>(
     '/api/stocks/custom-fields',
-    { method: 'PUT', body: JSON.stringify({ customFields }) },
+    {
+      method: 'PUT',
+      body: JSON.stringify({ customFields }),
+      timeoutMs: 15000,
+    },
   );
 }
 
@@ -143,5 +166,6 @@ export async function stockDbReplaceAll(
   return request('/api/stocks', {
     method: 'PUT',
     body: JSON.stringify({ stocks, customFields }),
+    timeoutMs: 300000,
   });
 }
