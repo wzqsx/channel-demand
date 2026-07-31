@@ -23,7 +23,7 @@ import { useProductStore } from '../stores/product';
 import { useCompanyStore } from '../stores/company';
 import { bootstrapStores } from '../stores/bootstrap';
 import type { Requisition, ImportRequisitionData } from '../types';
-import { weekStartSaturday, weekLabel, disabledFutureWeekDate } from '../utils/week';
+import { weekStartSaturday, weekLabel, isFutureWeek, currentWeekStart } from '../utils/week';
 import { exportRows, downloadTemplate, readExcelFromEvent, cell, cellNum } from '../utils/excel';
 import { assertRequisitionScope, getChannelAllowedWarehouses } from '../utils/companyScope';
 import { getBottleEquivalentStock } from '../utils/packStock';
@@ -77,7 +77,6 @@ onMounted(() => {
 const openDialog = () => {
   const cur = weekStartSaturday();
   let w = filterWeek.value || cur;
-  if (w > cur) w = cur;
   form.value = {
     weekStart: weekStartSaturday(w),
   };
@@ -85,6 +84,18 @@ const openDialog = () => {
   stockCheckResults.value = [];
   importDialogVisible.value = true;
 };
+
+const formWeekHint = computed(() => {
+  const w = form.value.weekStart;
+  if (!w) return '周五～周四为一周；默认本周，也可提前选下周计划';
+  if (isFutureWeek(w)) {
+    return `${weekLabel(w)} · 尚未到提报日（提前提报下周/后周计划，提交时会确认）`;
+  }
+  if (w < currentWeekStart()) {
+    return `${weekLabel(w)} · 历史周`;
+  }
+  return `${weekLabel(w)} · 本周`;
+});
 
 const goChannelManage = () => {
   importDialogVisible.value = false;
@@ -469,7 +480,7 @@ const goProductManage = () => {
 };
 
 const handleSubmit = async () => {
-  if (!form.value.weekStart) return ElMessage.error('请选择周起始');
+  if (!form.value.weekStart) return ElMessage.error('请选择要货周期');
   if (!importData.value.length) return ElMessage.error('请导入要货数据');
   if (importBadRows.value.length) {
     return ElMessage.error(
@@ -478,6 +489,23 @@ const handleSubmit = async () => {
   }
   const groups = groupImportRowsForSubmit(importOkRows.value);
   if (!groups.length) return ElMessage.error('没有可提交的要货行');
+
+  // 提前选未来周 = 提报下周计划：二次确认
+  if (isFutureWeek(form.value.weekStart)) {
+    try {
+      await ElMessageBox.confirm(
+        `当前要货周期「${weekLabel(form.value.weekStart)}」尚未到提报日期。\n本周为「${weekLabel(currentWeekStart())}」。\n\n确认要提前提报该周计划吗？`,
+        '未到提报日期',
+        {
+          type: 'warning',
+          confirmButtonText: '确认提报',
+          cancelButtonText: '取消',
+        },
+      );
+    } catch {
+      return;
+    }
+  }
 
   // 仅校验商品档案：库存不足不拦截提交（验库存按钮仍可手工查看）
   const missing = missingProductEntries(importOkRows.value);
@@ -605,7 +633,6 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
         placeholder="要货周期"
         size="small"
         style="width: 150px"
-        :disabled-date="disabledFutureWeekDate"
         @change="(v: string) => { if (v) filterWeek = weekStartSaturday(v) }"
       />
       <MultiCheckFilter
@@ -618,7 +645,11 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
       <ElButton size="small" @click="goShortageAlert">缺货与预警</ElButton>
       <ElButton size="small" @click="exportList">导出明细</ElButton>
       <ElButton size="small" @click="downloadDemandTemplate">要货模板</ElButton>
-      <span class="week-label">要货周期：{{ weekLabel(filterWeek) }}（周五～周四，不可选未来周）</span>
+      <span class="week-label">
+        要货周期：{{ weekLabel(filterWeek) }}
+        <template v-if="isFutureWeek(filterWeek)">（提前周）</template>
+        · 周五～周四
+      </span>
     </template>
 
     <div class="table-wrap">
@@ -726,11 +757,12 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
                 type="date"
                 value-format="YYYY-MM-DD"
                 class="req-control"
-                placeholder="默认本周"
-                :disabled-date="disabledFutureWeekDate"
+                placeholder="默认本周，可选未来周"
                 @change="(v: string) => { if (v) form.weekStart = weekStartSaturday(v) }"
               />
-              <span class="week-pick__label">{{ weekLabel(form.weekStart) }}（周五～周四，不可选未来周）</span>
+              <span class="week-pick__label" :class="{ 'is-future': isFutureWeek(form.weekStart) }">
+                {{ formWeekHint }}
+              </span>
             </div>
           </ElFormItem>
           <ElFormItem class="form-cell form-cell--full">
@@ -911,6 +943,10 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
   font-size: 13px;
   color: var(--erp-text-muted);
   white-space: nowrap;
+}
+
+.week-pick__label.is-future {
+  color: #b45309;
 }
 
 .detail-meta {

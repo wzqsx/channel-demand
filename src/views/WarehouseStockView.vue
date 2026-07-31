@@ -34,7 +34,7 @@ import { useRequisitionStore } from '../stores/requisition';
 import { useChannelStore } from '../stores/channel';
 import { bootstrapStores } from '../stores/bootstrap';
 import type { WarehouseStock, CustomFieldConfig, FieldType, ImportWarehouseStockData } from '../types';
-import { weekStartSaturday, weekLabel, disabledFutureWeekDate } from '../utils/week';
+import { weekStartSaturday, weekLabel } from '../utils/week';
 import { readExcelFromEvent, exportRows, downloadTemplate, cell, cellNum } from '../utils/excel';
 import { formatProductQty } from '../utils/qtyDisplay';
 import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyFilter';
@@ -949,7 +949,6 @@ const handleFieldDelete = (key: string) => {
             placeholder="导入归属周"
             size="small"
             class="stock-toolbar__date"
-            :disabled-date="disabledFutureWeekDate"
             @change="(v: string) => { if (v) importWeekStart = weekStartSaturday(v) }"
           />
           <MultiCheckFilter

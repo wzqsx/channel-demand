@@ -36,7 +36,7 @@ async function main() {
     assertRequisitionScope,
     getChannelAllowedWarehouses,
   } = await import('../src/utils/companyScope.ts');
-  const { completionRate, weekStartSaturday, weekLabel, weekEnd, disabledFutureWeekDate } =
+  const { completionRate, weekStartSaturday, weekLabel, weekEnd, isFutureWeek, currentWeekStart } =
     await import('../src/utils/week.ts');
   const { buildShortageAndWarnings } = await import('../src/utils/shortageAlert.ts');
 
@@ -156,7 +156,7 @@ async function main() {
   ok('要货为 0 且无销货 → 0', completionRate(0, 0) === 0);
   ok('销货超出可 >100', completionRate(120, 100) === 120);
 
-  console.log('\n[5b] 要货周期 = 周五～下周四，不可选未来周');
+  console.log('\n[5b] 要货周期 = 周五～下周四，可选未来周（提交时确认）');
   {
     const sample = weekStartSaturday('2026-07-31');
     ok('2026-07-31 → 周起始周五', sample === '2026-07-31', `got=${sample}`);
@@ -168,15 +168,14 @@ async function main() {
     );
     const nextFri = weekStartSaturday('2026-08-07');
     ok('下周 8月7日—8月13日', weekLabel(nextFri) === '8月7日—8月13日', `label=${weekLabel(nextFri)}`);
-    // 以「今天」为锚：未来周禁用；本周与历史周可选
-    const todayStart = weekStartSaturday();
-    ok('本周起始可选', !disabledFutureWeekDate(new Date(todayStart + 'T12:00:00')));
+    const todayStart = currentWeekStart();
+    ok('本周不是未来周', !isFutureWeek(todayStart));
     const future = new Date(todayStart + 'T12:00:00');
     future.setDate(future.getDate() + 7);
-    ok('下一周起始不可选', disabledFutureWeekDate(future));
+    ok('下一周识别为未来周', isFutureWeek(weekStartSaturday(future)));
     const past = new Date(todayStart + 'T12:00:00');
     past.setDate(past.getDate() - 7);
-    ok('上一周可选', !disabledFutureWeekDate(past));
+    ok('上一周不是未来周', !isFutureWeek(weekStartSaturday(past)));
   }
 
   console.log('\n[6] 库存可用量按所选仓库');

@@ -23,7 +23,7 @@ import { useWarehouseStockStore } from '../stores/warehouseStock';
 import { useProductStore } from '../stores/product';
 import { useRequisitionStore } from '../stores/requisition';
 import { bootstrapStores } from '../stores/bootstrap';
-import { weekStartSaturday, weekLabel, disabledFutureWeekDate } from '../utils/week';
+import { weekStartSaturday, weekLabel } from '../utils/week';
 import { buildShortageAndWarnings, type AlertKind, type ShortageAlertRow } from '../utils/shortageAlert';
 import { formatProductQty } from '../utils/qtyDisplay';
 import { exportRows } from '../utils/excel';
@@ -325,7 +325,6 @@ const handleExport = () => {
             placeholder="要货周期"
             size="small"
             class="toolbar__date"
-            :disabled-date="disabledFutureWeekDate"
             @change="(v: string) => { if (v) weekStart = weekStartSaturday(v) }"
           />
           <MultiCheckFilter

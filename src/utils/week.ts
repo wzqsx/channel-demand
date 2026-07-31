@@ -63,12 +63,18 @@ export function currentWeekStart(now: Date | string = new Date()): string {
   return weekStart(now);
 }
 
+/** 是否比「本周」更晚（提前提报下周/后周计划） */
+export function isFutureWeek(weekStartStr: string, now: Date | string = new Date()): boolean {
+  const w = String(weekStartStr || '').trim();
+  if (!w) return false;
+  return weekStart(w) > currentWeekStart(now);
+}
+
 /**
- * 日期选择禁用：不允许选「比本周更晚」的提报周
- * （本周及历史周可选；下周要等时间走到才能选）
+ * @deprecated 已允许选未来周（提交时二次确认）；保留空实现以免旧引用报错
  */
-export function disabledFutureWeekDate(date: Date): boolean {
-  return weekStart(date) > currentWeekStart();
+export function disabledFutureWeekDate(_date: Date): boolean {
+  return false;
 }
 
 export type PeriodGrain = 'week' | 'month' | 'quarter' | 'year';
