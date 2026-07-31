@@ -302,6 +302,17 @@ async function main() {
   await stockStore.restoreFromPreImportBackup();
   ok('可从安全备份恢复', stockStore.stocks.length === afterFirst, `len=${stockStore.stocks.length}`);
 
+  console.log('\n[12] 缺货预警大表计算性能');
+  const t1 = Date.now();
+  const alertRows = buildShortageAndWarnings({ weekStart: week });
+  const alertMs = Date.now() - t1;
+  ok('索引已建立', stockStore.productWhIndex.size > 0);
+  ok(
+    '2 万行库存下缺货页计算 < 1.5s',
+    alertMs < 1500,
+    `ms=${alertMs} rows=${alertRows.length}`,
+  );
+
   console.log('\n────────────────────');
   if (fails.length) {
     console.error(`自检失败 ${fails.length} 项:\n - ${fails.join('\n - ')}`);

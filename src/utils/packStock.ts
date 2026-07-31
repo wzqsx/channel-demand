@@ -39,7 +39,7 @@ export type PackStockBreakdown = {
 
 /**
  * 瓶规等效库存 = 瓶规自身 + Σ(箱规库存 × 换算比例)
- * 业务要货按瓶规编码时，箱规仓存也要算进可用。
+ * 走库存索引，不再对 stocks 全表 filter。
  */
 export function getBottleEquivalentStock(
   productCode: string,
@@ -81,7 +81,6 @@ export function getBottleEquivalentStock(
   const currentStock = ownStock + packStock;
   const inTransitStock = ownInTransit + packInTransit;
 
-  // 若查的是未建档编码，仍返回自身仓存
   if (!productStore.getProductByCode(baseCode) && !packs.length) {
     const raw = stockStore.getAvailableStockByWarehouses(productCode, warehouseIds);
     const rawStock = stockStore.getTotalStock(productCode, warehouseIds);

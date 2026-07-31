@@ -47,6 +47,8 @@ export type ImportStocksResult = {
   backend: 'sqlite' | 'idb';
 };
 
+type WhAgg = { stock: number; inTransit: number };
+
 function normalizeRow(s: WarehouseStock): WarehouseStock {
   return markRaw({
     ...s,
@@ -55,9 +57,60 @@ function normalizeRow(s: WarehouseStock): WarehouseStock {
   });
 }
 
+/** productCode → warehouseId → 汇总（缺货/预警查询用，避免扫全表） */
+function buildProductWhIndex(list: WarehouseStock[]): Map<string, Map<string, WhAgg>> {
+  const m = new Map<string, Map<string, WhAgg>>();
+  for (let i = 0; i < list.length; i++) {
+    const s = list[i];
+    let wm = m.get(s.productCode);
+    if (!wm) {
+      wm = new Map();
+      m.set(s.productCode, wm);
+    }
+    const cur = wm.get(s.warehouseId);
+    if (cur) {
+      cur.stock += s.stock;
+      cur.inTransit += s.inTransitStock;
+    } else {
+      wm.set(s.warehouseId, { stock: s.stock, inTransit: s.inTransitStock });
+    }
+  }
+  return m;
+}
+
+function sumFromIndex(
+  index: Map<string, Map<string, WhAgg>>,
+  productCode: string,
+  warehouseIds?: string[],
+): WhAgg {
+  const wm = index.get(productCode);
+  if (!wm) return { stock: 0, inTransit: 0 };
+  if (!warehouseIds) {
+    let stock = 0;
+    let inTransit = 0;
+    for (const v of wm.values()) {
+      stock += v.stock;
+      inTransit += v.inTransit;
+    }
+    return { stock, inTransit };
+  }
+  if (!warehouseIds.length) return { stock: 0, inTransit: 0 };
+  let stock = 0;
+  let inTransit = 0;
+  for (let i = 0; i < warehouseIds.length; i++) {
+    const v = wm.get(warehouseIds[i]);
+    if (v) {
+      stock += v.stock;
+      inTransit += v.inTransit;
+    }
+  }
+  return { stock, inTransit };
+}
+
 export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   /** shallow：大表不做逐行深层响应，避免打开页面卡死 */
   const stocks = shallowRef<WarehouseStock[]>([]);
+  const productWhIndex = shallowRef(new Map<string, Map<string, WhAgg>>());
   const customFields = ref<CustomFieldConfig[]>([]);
   const hydrated = ref(false);
   const importing = ref(false);
@@ -67,6 +120,10 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let saving = false;
   let saveQueued = false;
+
+  const rebuildIndex = (list: WarehouseStock[]) => {
+    productWhIndex.value = buildProductWhIndex(list);
+  };
 
   const scheduleSave = () => {
     if (!hydrated.value || importing.value || useSqlite.value) return;
@@ -103,7 +160,9 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     nextStocks: WarehouseStock[],
     nextFields: CustomFieldConfig[],
   ) => {
-    stocks.value = (nextStocks || []).map(normalizeRow);
+    const normalized = (nextStocks || []).map(normalizeRow);
+    stocks.value = normalized;
+    rebuildIndex(normalized);
     customFields.value = nextFields || [];
   };
 
@@ -187,10 +246,12 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
 
   const initStocks = () => {
     if (stocks.value.length > 0) {
-      stocks.value = stocks.value.map(normalizeRow);
+      const normalized = stocks.value.map(normalizeRow);
+      stocks.value = normalized;
+      rebuildIndex(normalized);
       return;
     }
-    stocks.value = [
+    const seed = [
       { id: '1', warehouseId: 'W001', productCode: 'P001', stock: 200, inTransitStock: 50 },
       { id: '2', warehouseId: 'W001', productCode: 'P002', stock: 50, inTransitStock: 100 },
       { id: '3', warehouseId: 'W002', productCode: 'P001', stock: 150, inTransitStock: 0 },
@@ -204,6 +265,8 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
       { id: '11', warehouseId: 'W008', productCode: 'P001', stock: 60, inTransitStock: 10 },
       { id: '12', warehouseId: 'W001', productCode: 'P0012', stock: 5, inTransitStock: 0 },
     ].map(normalizeRow);
+    stocks.value = seed;
+    rebuildIndex(seed);
   };
 
   const getStocksByWarehouse = (warehouseId: string) =>
@@ -216,22 +279,36 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     stocks.value.find(s => s.warehouseId === warehouseId && s.productCode === productCode);
 
   const getTotalStock = (productCode: string, warehouseIds?: string[]) =>
-    stocks.value
-      .filter(s => s.productCode === productCode && (!warehouseIds || warehouseIds.includes(s.warehouseId)))
-      .reduce((sum, s) => sum + s.stock, 0);
+    sumFromIndex(productWhIndex.value, productCode, warehouseIds).stock;
 
   const getTotalInTransitStock = (productCode: string, warehouseIds?: string[]) =>
-    stocks.value
-      .filter(s => s.productCode === productCode && (!warehouseIds || warehouseIds.includes(s.warehouseId)))
-      .reduce((sum, s) => sum + s.inTransitStock, 0);
+    sumFromIndex(productWhIndex.value, productCode, warehouseIds).inTransit;
 
   const getAvailableStock = (productCode: string) =>
     getAvailableStockByWarehouses(productCode);
 
-  const getAvailableStockByWarehouses = (productCode: string, warehouseIds?: string[]) =>
-    stocks.value
-      .filter(s => s.productCode === productCode && (!warehouseIds?.length || warehouseIds.includes(s.warehouseId)))
-      .reduce((sum, s) => sum + s.stock + s.inTransitStock, 0);
+  const getAvailableStockByWarehouses = (productCode: string, warehouseIds?: string[]) => {
+    const a = sumFromIndex(
+      productWhIndex.value,
+      productCode,
+      warehouseIds?.length ? warehouseIds : undefined,
+    );
+    return a.stock + a.inTransit;
+  };
+
+  /** 指定仓内是否存在这些商品编码的任一行（O(仓×码)，不扫全表） */
+  const hasAnyStockRows = (productCodes: string[], warehouseIds: string[]) => {
+    if (!productCodes.length || !warehouseIds.length) return false;
+    const index = productWhIndex.value;
+    for (let i = 0; i < productCodes.length; i++) {
+      const wm = index.get(productCodes[i]);
+      if (!wm) continue;
+      for (let j = 0; j < warehouseIds.length; j++) {
+        if (wm.has(warehouseIds[j])) return true;
+      }
+    }
+    return false;
+  };
 
   const upsertStock = (
     warehouseId: string,
@@ -255,6 +332,7 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
       });
       next[index] = row;
       stocks.value = next;
+      rebuildIndex(next);
     } else {
       row = normalizeRow({
         id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
@@ -264,7 +342,9 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
         inTransitStock,
         customFields: fields,
       });
-      stocks.value = [...stocks.value, row];
+      const next = [...stocks.value, row];
+      stocks.value = next;
+      rebuildIndex(next);
     }
     if (useSqlite.value) {
       // 只写库，不再全量回读（大表回读会把界面卡死）
@@ -273,7 +353,9 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   };
 
   const deleteStock = (id: string) => {
-    stocks.value = stocks.value.filter(s => s.id !== id);
+    const next = stocks.value.filter(s => s.id !== id);
+    stocks.value = next;
+    rebuildIndex(next);
     if (useSqlite.value) {
       void stockDbDelete(id).catch(e => console.error('SQLite delete 失败', e));
     }
@@ -512,7 +594,9 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
         stocks: built.rows,
         customFields: built.nextCustom,
       });
-      stocks.value = built.rows;
+      const normalized = built.rows.map(normalizeRow);
+      stocks.value = normalized;
+      rebuildIndex(normalized);
       customFields.value = built.nextCustom;
       return {
         imported: built.imported,
@@ -531,7 +615,11 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
   };
 
   const restoreFromSnapshot = (snapshot: StockSnapshot) => {
-    stocks.value = JSON.parse(JSON.stringify(snapshot.stocks));
+    const next = (JSON.parse(JSON.stringify(snapshot.stocks)) as WarehouseStock[]).map(
+      normalizeRow,
+    );
+    stocks.value = next;
+    rebuildIndex(next);
   };
 
   const restoreFromPreImportBackup = async () => {
@@ -564,6 +652,7 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
 
   return {
     stocks,
+    productWhIndex,
     customFields,
     hydrated,
     importing,
@@ -579,6 +668,7 @@ export const useWarehouseStockStore = defineStore('warehouseStock', () => {
     getTotalInTransitStock,
     getAvailableStock,
     getAvailableStockByWarehouses,
+    hasAnyStockRows,
     upsertStock,
     deleteStock,
     setCustomFields,

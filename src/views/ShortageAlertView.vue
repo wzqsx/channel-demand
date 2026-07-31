@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch, onMounted, nextTick } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useRoute } from 'vue-router';
 import {
@@ -19,6 +19,9 @@ import type { StatItem } from '../components/StatCards.vue';
 import MultiCheckFilter from '../components/MultiCheckFilter.vue';
 import { useCompanyStore } from '../stores/company';
 import { useWarehouseStore } from '../stores/warehouse';
+import { useWarehouseStockStore } from '../stores/warehouseStock';
+import { useProductStore } from '../stores/product';
+import { useRequisitionStore } from '../stores/requisition';
 import { bootstrapStores } from '../stores/bootstrap';
 import { weekStartSaturday, weekLabel } from '../utils/week';
 import { buildShortageAndWarnings, type AlertKind, type ShortageAlertRow } from '../utils/shortageAlert';
@@ -26,11 +29,16 @@ import { formatProductQty } from '../utils/qtyDisplay';
 import { exportRows } from '../utils/excel';
 import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyFilter';
 import { formatCompanyLabel, formatCompanyNameOnly } from '../utils/companyDisplay';
+import { yieldToMain } from '../utils/idbKv';
 
 const route = useRoute();
 const companyStore = useCompanyStore();
 const warehouseStore = useWarehouseStore();
+const stockStore = useWarehouseStockStore();
+const productStore = useProductStore();
+const requisitionStore = useRequisitionStore();
 const { companies } = storeToRefs(companyStore);
+const { stocks, hydrated, productWhIndex } = storeToRefs(stockStore);
 
 const weekStart = ref(weekStartSaturday());
 const companyIds = useRememberedCompanyFilter('shortage-alert');
@@ -38,13 +46,39 @@ const tab = ref<'all' | AlertKind>('all');
 const keyword = ref('');
 /** 折叠的公司 id；默认全部展开 */
 const collapsedIds = ref<Set<string>>(new Set());
+const allRows = ref<ShortageAlertRow[]>([]);
+const computing = ref(false);
+let computeSeq = 0;
 
 const companyFilterOptions = computed(() =>
   companies.value.map(c => ({ value: c.id, label: formatCompanyLabel(c) })),
 );
 
-onMounted(() => {
-  bootstrapStores();
+const rebuildRows = async () => {
+  const seq = ++computeSeq;
+  computing.value = true;
+  await nextTick();
+  await yieldToMain();
+  try {
+    const rows = buildShortageAndWarnings({
+      weekStart: weekStart.value,
+      companyIds: companyIds.value.length ? companyIds.value : undefined,
+    });
+    if (seq !== computeSeq) return;
+    allRows.value = rows;
+  } catch (e) {
+    console.error('缺货预警计算失败', e);
+    if (seq === computeSeq) {
+      allRows.value = [];
+      ElMessage.error('缺货预警计算失败，请稍后重试');
+    }
+  } finally {
+    if (seq === computeSeq) computing.value = false;
+  }
+};
+
+onMounted(async () => {
+  await bootstrapStores();
 
   const qWeek = route.query.week;
   if (typeof qWeek === 'string' && qWeek) weekStart.value = weekStartSaturday(qWeek);
@@ -55,13 +89,15 @@ onMounted(() => {
     const qCompany = route.query.companyId;
     if (typeof qCompany === 'string' && qCompany) companyIds.value = [qCompany];
   }
+  await rebuildRows();
 });
 
-const allRows = computed(() =>
-  buildShortageAndWarnings({
-    weekStart: weekStart.value,
-    companyIds: companyIds.value.length ? companyIds.value : undefined,
-  }),
+watch(
+  [weekStart, companyIds, hydrated, stocks, productWhIndex, () => productStore.products.length, () => requisitionStore.requisitions.length],
+  () => {
+    if (!hydrated.value) return;
+    void rebuildRows();
+  },
 );
 
 const keywordNorm = computed(() => keyword.value.trim().toLowerCase());
@@ -324,8 +360,12 @@ const handleExport = () => {
       </div>
     </template>
 
-    <div class="wrap">
-      <div v-if="!companies.length" class="empty-box">
+    <div class="wrap" v-loading="computing">
+      <div v-if="computing && !allRows.length" class="empty-box">
+        正在计算缺货与预警…
+      </div>
+
+      <div v-else-if="!companies.length" class="empty-box">
         尚未维护公司，请先到「公司主体」新增。
       </div>
 
