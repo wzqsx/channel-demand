@@ -24,7 +24,7 @@ import { useCompanyStore } from '../stores/company';
 import { useProductStore } from '../stores/product';
 import { bootstrapStores } from '../stores/bootstrap';
 import type { DemandSalesCompareRow, ImportRequisitionData, Requisition } from '../types';
-import { weekStartSaturday, weekLabel } from '../utils/week';
+import { weekStartSaturday, weekLabel, disabledFutureWeekDate } from '../utils/week';
 import { readExcelFromEvent, exportRows, downloadTemplate, cell, cellNum } from '../utils/excel';
 import { formatProductQty } from '../utils/qtyDisplay';
 import { useRememberedCompanyFilter } from '../composables/useRememberedCompanyFilter';
@@ -329,9 +329,10 @@ const compareTag = (status: DemandSalesCompareRow['status']) => {
         v-model="weekStart"
         type="date"
         value-format="YYYY-MM-DD"
-        placeholder="周起始"
+        placeholder="要货周期"
         size="small"
         style="width: 150px"
+        :disabled-date="disabledFutureWeekDate"
         @change="(v: string) => { if (v) weekStart = weekStartSaturday(v) }"
       />
       <MultiCheckFilter
@@ -340,7 +341,7 @@ const compareTag = (status: DemandSalesCompareRow['status']) => {
         placeholder="主体(可多选)"
         width="200px"
       />
-      <span class="week-label">{{ weekLabel(weekStart) }}</span>
+      <span class="week-label">要货周期：{{ weekLabel(weekStart) }}</span>
       <ElButton size="small" @click="exportCompare">导出核对</ElButton>
       <ElButton size="small" @click="downloadSalesTemplate">销货模板</ElButton>
     </template>

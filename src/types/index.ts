@@ -67,7 +67,7 @@ export interface Requisition {
   companyId: string;
   channelId: string;
   warehouseIds: string[];
-  /** 周起始（周六 YYYY-MM-DD） */
+  /** 周起始（周五 YYYY-MM-DD；周五～下周四为一个提报周） */
   weekStart: string;
   items: RequisitionItem[];
   status: 'pending' | 'approved' | 'rejected';

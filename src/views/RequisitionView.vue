@@ -23,7 +23,7 @@ import { useProductStore } from '../stores/product';
 import { useCompanyStore } from '../stores/company';
 import { bootstrapStores } from '../stores/bootstrap';
 import type { Requisition, ImportRequisitionData } from '../types';
-import { weekStartSaturday, weekLabel } from '../utils/week';
+import { weekStartSaturday, weekLabel, disabledFutureWeekDate } from '../utils/week';
 import { exportRows, downloadTemplate, readExcelFromEvent, cell, cellNum } from '../utils/excel';
 import { assertRequisitionScope, getChannelAllowedWarehouses } from '../utils/companyScope';
 import { getBottleEquivalentStock } from '../utils/packStock';
@@ -75,8 +75,11 @@ onMounted(() => {
 });
 
 const openDialog = () => {
+  const cur = weekStartSaturday();
+  let w = filterWeek.value || cur;
+  if (w > cur) w = cur;
   form.value = {
-    weekStart: filterWeek.value || weekStartSaturday(),
+    weekStart: weekStartSaturday(w),
   };
   importData.value = [];
   stockCheckResults.value = [];
@@ -599,9 +602,10 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
         v-model="filterWeek"
         type="date"
         value-format="YYYY-MM-DD"
-        placeholder="周起始(周六)"
+        placeholder="要货周期"
         size="small"
         style="width: 150px"
+        :disabled-date="disabledFutureWeekDate"
         @change="(v: string) => { if (v) filterWeek = weekStartSaturday(v) }"
       />
       <MultiCheckFilter
@@ -614,15 +618,15 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
       <ElButton size="small" @click="goShortageAlert">缺货与预警</ElButton>
       <ElButton size="small" @click="exportList">导出明细</ElButton>
       <ElButton size="small" @click="downloadDemandTemplate">要货模板</ElButton>
-      <span class="week-label">当前周：{{ weekLabel(filterWeek) }}</span>
+      <span class="week-label">要货周期：{{ weekLabel(filterWeek) }}（周五～周四，不可选未来周）</span>
     </template>
 
     <div class="table-wrap">
       <ElTable :data="listRows" border size="small" stripe class="erp-data-table" height="100%">
         <ElTableColumn type="index" label="序号" width="55" fixed="left" />
         <ElTableColumn prop="id" label="单号" width="140" sortable show-overflow-tooltip />
-        <ElTableColumn prop="weekStart" label="周次" width="110" sortable>
-          <template #default="{ row }">{{ row.weekStart }}</template>
+        <ElTableColumn prop="weekStart" label="要货周期" width="160" sortable>
+          <template #default="{ row }">{{ weekLabel(row.weekStart) }}</template>
         </ElTableColumn>
         <ElTableColumn
           label="主体"
@@ -715,14 +719,19 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
     >
       <ElForm :model="form" label-width="88px" size="small" class="req-form">
         <div class="form-grid">
-          <ElFormItem label="周起始" required class="form-cell">
-            <ElDatePicker
-              v-model="form.weekStart"
-              type="date"
-              value-format="YYYY-MM-DD"
-              class="req-control"
-              @change="(v: string) => { if (v) form.weekStart = weekStartSaturday(v) }"
-            />
+          <ElFormItem label="要货周期" required class="form-cell form-cell--full">
+            <div class="week-pick">
+              <ElDatePicker
+                v-model="form.weekStart"
+                type="date"
+                value-format="YYYY-MM-DD"
+                class="req-control"
+                placeholder="默认本周"
+                :disabled-date="disabledFutureWeekDate"
+                @change="(v: string) => { if (v) form.weekStart = weekStartSaturday(v) }"
+              />
+              <span class="week-pick__label">{{ weekLabel(form.weekStart) }}（周五～周四，不可选未来周）</span>
+            </div>
           </ElFormItem>
           <ElFormItem class="form-cell form-cell--full">
             <div class="form-empty-hint" style="margin: 0">
@@ -888,6 +897,20 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
 .week-label {
   font-size: 13px;
   color: var(--erp-text-muted);
+}
+
+.week-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.week-pick__label {
+  font-size: 13px;
+  color: var(--erp-text-muted);
+  white-space: nowrap;
 }
 
 .detail-meta {
