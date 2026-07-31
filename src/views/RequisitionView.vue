@@ -876,6 +876,11 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
                 <span class="period-end__date">{{ formWeekEndText }}</span>
                 <span class="period-end__tag">自动 +6 天</span>
               </div>
+              <HelpTip
+                inline
+                title="要货周期说明"
+                content="只需选择起始日；结束日自动为起始日后第 6 天（共 7 天）。\n例：选 7月30日 → 7月30日 — 8月5日。\n无需选手动主体/渠道：导入 Excel 后按每行渠道自动开单（多渠道会拆成多张要货单）。"
+              />
               <span
                 v-if="formWeekHint"
                 class="week-pick__label"
@@ -884,104 +889,101 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
                 {{ formWeekHint }}
               </span>
             </div>
-            <div class="period-hint">
-              只需选择起始日；结束日自动为起始日后第 6 天（共 7 天）。例：选 7月30日 → 7月30日 — 8月5日。
-            </div>
-          </ElFormItem>
-          <ElFormItem class="form-cell form-cell--full">
-            <div class="period-hint" style="margin: 0; color: var(--erp-text-muted)">
-              无需选手动主体/渠道：导入 Excel 后按每行渠道自动开单（多渠道会拆成多张要货单）。
-            </div>
           </ElFormItem>
         </div>
       </ElForm>
 
       <div class="import-block">
         <div class="import-block__head">
-          <span>要货明细</span>
+          <span class="import-block__title">
+            要货明细
+            <HelpTip
+              inline
+              title="导入说明"
+              content="请先下载模板，按规范填写渠道及 SKU 数量后上传。\n编码或名称填一个即可；导入后会弹出数据预览供核对。\n验库存仅供参考，不拦截提交。"
+            />
+          </span>
           <div class="import-block__actions">
             <input ref="demandFileRef" type="file" accept=".xlsx,.xls" class="hidden-file" @change="handleImport" />
             <ElButton type="warning" size="small" class="btn-template" @click="downloadDemandTemplate">
               ⬇ 下载要货模板
             </ElButton>
             <ElButton type="primary" size="small" @click="triggerFile(demandFileRef)">导入 Excel</ElButton>
+            <ElButton size="small" :disabled="!importData.length" @click="runStockCheck">验库存</ElButton>
+          </div>
+        </div>
+
+        <template v-if="importData.length">
+          <div class="import-meta">
+            已确认导入 {{ importOkRows.length }} 行
+            <template v-if="importChannelSummary">（{{ importChannelSummary }}）</template>
+            <template v-if="importBadRows.length">；{{ importBadRows.length }} 行匹配失败，提交前需修正</template>
             <ElButton
+              v-if="importBadRows.length"
+              link
+              type="primary"
               size="small"
-              :disabled="!importData.length"
-              @click="runStockCheck"
-            >
-              验库存
-            </ElButton>
-            <HelpTip
-              inline
-              title="说明"
-              content="先下载模板填写渠道与 SKU，导入后会弹出预览确认。验库存仅供参考、不拦提交。编码或名称填一个即可。"
-            />
+              @click="goChannelManage"
+            >去渠道管理</ElButton>
           </div>
-        </div>
-        <div v-if="importData.length" class="form-empty-hint" style="margin: 0 0 8px">
-          已确认导入 {{ importOkRows.length }} 行
-          <template v-if="importChannelSummary">（{{ importChannelSummary }}）</template>
-          <template v-if="importBadRows.length">；{{ importBadRows.length }} 行匹配失败，提交前需修正</template>
-          。
-          <ElButton v-if="importBadRows.length" link type="primary" size="small" @click="goChannelManage">去渠道管理</ElButton>
-        </div>
-        <ElTable v-if="importData.length" :data="importData" border size="small" max-height="280">
-          <ElTableColumn type="index" label="序号" width="55" />
-          <ElTableColumn label="主体" min-width="110" show-overflow-tooltip>
-            <template #default="{ row }">
-              {{ row.resolvedCompanyLabel || row.companyCode || row.companyName || '—' }}
-            </template>
-          </ElTableColumn>
-          <ElTableColumn label="渠道" min-width="130" show-overflow-tooltip>
-            <template #default="{ row }">
-              {{ row.resolvedChannelLabel || row.channelCode || row.channelName || '—' }}
-            </template>
-          </ElTableColumn>
-          <ElTableColumn label="仓库" min-width="140" show-overflow-tooltip>
-            <template #default="{ row }">
-              {{ row.resolvedWarehouseLabel || row.warehouseCodes || '（渠道全部绑定仓）' }}
-            </template>
-          </ElTableColumn>
-          <ElTableColumn prop="productCode" label="商品编码" width="110" sortable />
-          <ElTableColumn prop="productName" label="商品名称" min-width="140" sortable />
-          <ElTableColumn prop="quantity" label="数量" width="110" sortable show-overflow-tooltip>
-            <template #default="{ row }">
-              {{ formatProductQty(row.quantity, row.productCode) }}
-            </template>
-          </ElTableColumn>
-          <ElTableColumn label="匹配" width="110">
-            <template #default="{ row }">
-              <ElTag v-if="row.resolveError" size="small" type="danger">失败</ElTag>
-              <ElTag
-                v-else-if="row.productCode && !productStore.getProductByCode(row.productCode)"
-                size="small"
-                type="warning"
-              >无商品</ElTag>
-              <ElTag v-else size="small" type="success">OK</ElTag>
-            </template>
-          </ElTableColumn>
-          <ElTableColumn label="说明" min-width="140" show-overflow-tooltip>
-            <template #default="{ row }">
-              {{
-                row.resolveError
-                  || (row.productCode && !productStore.getProductByCode(row.productCode)
-                    ? '无此商品编码，提交时可快速新增或去商品管理'
-                    : (row.remark || ''))
-              }}
-            </template>
-          </ElTableColumn>
-        </ElTable>
-        <div v-else class="import-drop">
-          <p class="import-drop__text">
-            先下载模板，按规范填写渠道及 SKU 数量后上传；导入后会弹出预览供核对。
-          </p>
-          <div class="import-drop__actions">
-            <ElButton type="warning" size="small" class="btn-template" @click="downloadDemandTemplate">
-              ⬇ 下载要货模板
-            </ElButton>
-            <ElButton type="primary" size="small" @click="triggerFile(demandFileRef)">导入 Excel</ElButton>
-          </div>
+          <ElTable :data="importData" border size="small" max-height="280">
+            <ElTableColumn type="index" label="序号" width="55" />
+            <ElTableColumn label="主体" min-width="110" show-overflow-tooltip>
+              <template #default="{ row }">
+                {{ row.resolvedCompanyLabel || row.companyCode || row.companyName || '—' }}
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="渠道" min-width="130" show-overflow-tooltip>
+              <template #default="{ row }">
+                {{ row.resolvedChannelLabel || row.channelCode || row.channelName || '—' }}
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="仓库" min-width="140" show-overflow-tooltip>
+              <template #default="{ row }">
+                {{ row.resolvedWarehouseLabel || row.warehouseCodes || '（渠道全部绑定仓）' }}
+              </template>
+            </ElTableColumn>
+            <ElTableColumn prop="productCode" label="商品编码" width="110" sortable />
+            <ElTableColumn prop="productName" label="商品名称" min-width="140" sortable />
+            <ElTableColumn prop="quantity" label="数量" width="110" sortable show-overflow-tooltip>
+              <template #default="{ row }">
+                {{ formatProductQty(row.quantity, row.productCode) }}
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="匹配" width="110">
+              <template #default="{ row }">
+                <ElTag v-if="row.resolveError" size="small" type="danger">失败</ElTag>
+                <ElTag
+                  v-else-if="row.productCode && !productStore.getProductByCode(row.productCode)"
+                  size="small"
+                  type="warning"
+                >无商品</ElTag>
+                <ElTag v-else size="small" type="success">OK</ElTag>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="说明" min-width="140" show-overflow-tooltip>
+              <template #default="{ row }">
+                {{
+                  row.resolveError
+                    || (row.productCode && !productStore.getProductByCode(row.productCode)
+                      ? '无此商品编码，提交时可快速新增或去商品管理'
+                      : (row.remark || ''))
+                }}
+              </template>
+            </ElTableColumn>
+          </ElTable>
+        </template>
+
+        <div
+          v-else
+          class="import-drop"
+          role="button"
+          tabindex="0"
+          @click="triggerFile(demandFileRef)"
+          @keydown.enter.prevent="triggerFile(demandFileRef)"
+        >
+          <p class="import-drop__text">点击此处或上方「导入 Excel」上传文件</p>
+          <p class="import-drop__sub">请先下载模板，按规范填写渠道及 SKU 后上传</p>
         </div>
       </div>
 
@@ -1168,7 +1170,7 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
 
 .period-row {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
   width: 100%;
@@ -1176,12 +1178,13 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
 
 .period-start {
   width: 160px !important;
-  max-width: 100%;
+  flex-shrink: 0;
 }
 
 .period-sep {
   font-size: 13px;
   color: var(--erp-text-muted);
+  flex-shrink: 0;
 }
 
 .period-end {
@@ -1196,6 +1199,7 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
   color: #6b7280;
   cursor: default;
   user-select: none;
+  flex-shrink: 0;
 }
 
 .period-end__date {
@@ -1213,11 +1217,52 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
 }
 
 .period-hint {
-  width: 100%;
-  margin-top: 6px;
+  display: none;
+}
+
+.import-block__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.import-meta {
+  margin: 0 0 8px;
   font-size: 12px;
+  color: var(--erp-text-muted);
   line-height: 1.5;
+}
+
+.import-drop {
+  padding: 36px 16px;
+  text-align: center;
+  border: 1px dashed #d1d5db;
+  border-radius: 10px;
+  background: #fafbfc;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.import-drop:hover {
+  border-color: #f59e0b;
+  background: #fffbeb;
+}
+
+.import-drop__text {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--erp-text, #303133);
+}
+
+.import-drop__sub {
+  margin: 0;
+  font-size: 12px;
   color: var(--erp-text-muted, #909399);
+}
+
+.import-drop__actions {
+  display: none;
 }
 
 .detail-meta {
@@ -1335,30 +1380,32 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
   gap: 6px;
 }
 
-.import-guide {
-  display: none;
-}
-
 .import-drop {
-  padding: 28px 16px;
+  padding: 36px 16px;
   text-align: center;
   border: 1px dashed #d1d5db;
   border-radius: 10px;
   background: #fafbfc;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.import-drop:hover {
+  border-color: #f59e0b;
+  background: #fffbeb;
 }
 
 .import-drop__text {
-  margin: 0 0 14px;
+  margin: 0 0 6px;
   font-size: 13px;
-  line-height: 1.55;
-  color: var(--erp-text-muted, #909399);
+  font-weight: 600;
+  color: var(--erp-text, #303133);
 }
 
-.import-drop__actions {
-  display: flex;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 8px;
+.import-drop__sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--erp-text-muted, #909399);
 }
 
 .btn-template {
