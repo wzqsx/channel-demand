@@ -774,6 +774,9 @@ const metaOf = (row: WarehouseStock) =>
     status: stockStatusOf(row),
   };
 
+const stockRowClassName = ({ row }: { row: WarehouseStock }) =>
+  metaOf(row).gap > 0 ? 'stock-row--alert' : '';
+
 watch([searchCompanyIds, searchWarehouseIds, () => sortState.value.key, () => sortState.value.order], () => {
   page.value = 1;
 });
@@ -1021,7 +1024,7 @@ const handleFieldDelete = (key: string) => {
       class="erp-data-table stock-table"
       height="100%"
       v-loading="listLoading"
-      :row-class-name="({ row }: { row: WarehouseStock }) => (metaOf(row).gap > 0 ? 'stock-row--alert' : '')"
+      :row-class-name="stockRowClassName"
     >
       <ElTableColumn width="52" fixed="left" align="center" class-name="col-gear-cell">
         <template #header>

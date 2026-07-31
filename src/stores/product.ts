@@ -159,7 +159,26 @@ export const useProductStore = defineStore('product', () => {
     }
   };
 
-  const getProductByCode = (code: string) => byCode.value.get(code);
+  const getProductByCode = (code: string) => byCode.value.get(String(code || '').trim());
+
+  const getProductByName = (name: string) => {
+    const key = String(name || '').trim().toLowerCase();
+    if (!key) return undefined;
+    return products.value.find(p => String(p.name || '').trim().toLowerCase() === key);
+  };
+
+  /** 编码或名称填一个即可 */
+  const resolveProduct = (codeOrName?: string, fallbackName?: string) => {
+    for (const raw of [codeOrName, fallbackName]) {
+      const t = String(raw || '').trim();
+      if (!t) continue;
+      const byCode = getProductByCode(t);
+      if (byCode) return byCode;
+      const byName = getProductByName(t);
+      if (byName) return byName;
+    }
+    return undefined;
+  };
 
   const getPackProductsForBase = (baseCode: string) => packsByBase.value.get(baseCode) || [];
 
@@ -203,6 +222,8 @@ export const useProductStore = defineStore('product', () => {
     updateProduct,
     deleteProduct,
     getProductByCode,
+    getProductByName,
+    resolveProduct,
     getPackProductsForBase,
     upsertByCode,
     batchUpdate,

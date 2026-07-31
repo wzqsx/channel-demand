@@ -210,29 +210,38 @@ const parseExcelRows = (jsonData: any[]): ImportRequisitionData[] => {
   const converted: ImportRequisitionData[] = [];
   jsonData.forEach((item: any) => {
     const companyCode = cell(item, '主体编码', '公司编码', 'companyCode', 'company');
+    const companyName = cell(item, '主体名称', '公司名称', 'companyName');
     const channelCode = cell(item, '渠道编码', 'channelCode', 'channel');
     const channelName = cell(item, '渠道名称', 'channelName');
     const warehouseCodes = cell(
       item,
       '仓库编码(逗号分隔)',
       '仓库编码',
+      '仓库名称(逗号分隔)',
+      '仓库名称',
       'warehouseCodes',
       'warehouseCode',
     );
-    const productCode = cell(item, '商品编码', 'code');
-    const productName = cell(item, '商品名称', 'name');
+    const productCodeRaw = cell(item, '商品编码', 'code');
+    const productNameRaw = cell(item, '商品名称', 'name');
     let quantity = cellNum(item, '数量', 'quantity', '要货数量', '销量');
     const remark = cell(item, '备注', 'remark');
-    if (!productCode) return;
+
+    // 商品：编码或名称填一个即可（名称写在编码列也认）
+    const product = productStore.resolveProduct(productCodeRaw, productNameRaw);
+    const productCode = product?.code || String(productCodeRaw || '').trim();
+    const productName = product?.name || String(productNameRaw || productCode || '').trim();
+    if (!productCode && !productName) return;
+    if (!product && !productCode) return; // 只有名称且未匹配到档案则跳过
 
     const baseMeta = {
       companyCode: companyCode || undefined,
+      companyName: companyName || undefined,
       channelCode: channelCode || undefined,
       channelName: channelName || undefined,
       warehouseCodes: warehouseCodes || undefined,
     };
 
-    const product = productStore.getProductByCode(productCode);
     if (product?.combineProductCode && product.combineRatio > 0) {
       quantity = quantity * product.combineRatio;
       converted.push({
@@ -245,7 +254,7 @@ const parseExcelRows = (jsonData: any[]): ImportRequisitionData[] => {
     } else {
       converted.push({
         ...baseMeta,
-        productCode,
+        productCode: productCode || product?.code || '',
         productName: productName || product?.name || productCode,
         quantity,
         remark,
@@ -255,29 +264,13 @@ const parseExcelRows = (jsonData: any[]): ImportRequisitionData[] => {
   return converted;
 };
 
-/** 从导入行解析渠道：编码优先，其次名称（可限定主体） */
-const resolveChannelFromRow = (row: ImportRequisitionData, companyId?: string) => {
-  if (row.channelCode) {
-    const byCode = channelStore.getChannelByCode(row.channelCode);
-    if (byCode && byCode.enabled !== false) return byCode;
-  }
-  if (row.channelName) {
-    const name = row.channelName.trim();
-    if (companyId) {
-      const hit = channelStore.getChannelByName(name, companyId);
-      if (hit && hit.enabled !== false) return hit;
-    }
-    const any = channelStore.channels.find(c => c.enabled !== false && c.name === name);
-    if (any) return any;
-  }
-  return undefined;
-};
+/** 渠道：编码/名称列任一有值，按编码或名称匹配 */
+const resolveChannelFromRow = (row: ImportRequisitionData, companyId?: string) =>
+  channelStore.resolveChannel(row.channelCode, row.channelName, companyId);
 
 const resolveCompanyIdFromRow = (row: ImportRequisitionData, channelId?: string) => {
-  if (row.companyCode) {
-    const c = companyStore.getCompanyByCode(row.companyCode);
-    if (c) return c.id;
-  }
+  const c = companyStore.resolveCompany(row.companyCode, row.companyName);
+  if (c) return c.id;
   if (channelId) {
     const ch = channelStore.getChannelById(channelId);
     if (ch?.companyId) return ch.companyId;
@@ -289,13 +282,13 @@ const resolveCompanyIdFromRow = (row: ImportRequisitionData, channelId?: string)
 const resolveWarehouseIdsFromRow = (row: ImportRequisitionData, channelId: string) => {
   const allowed = getChannelAllowedWarehouses(channelId);
   if (!row.warehouseCodes?.trim()) return allowed.map(w => w.id);
-  const codes = row.warehouseCodes.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+  const tokens = row.warehouseCodes.split(/[,，]/).map(s => s.trim()).filter(Boolean);
   const ids: string[] = [];
   const allowedSet = new Set(allowed.map(w => w.id));
-  for (const code of codes) {
+  for (const token of tokens) {
     const w =
-      warehouseStore.getWarehouseByCode(code)
-      || warehouseStore.warehouses.find(x => x.name === code || x.id === code);
+      warehouseStore.resolveWarehouse(token)
+      || warehouseStore.warehouses.find(x => x.id === token);
     if (w && allowedSet.has(w.id) && !ids.includes(w.id)) ids.push(w.id);
   }
   return ids.length ? ids : allowed.map(w => w.id);
@@ -304,11 +297,12 @@ const resolveWarehouseIdsFromRow = (row: ImportRequisitionData, channelId: strin
 /** 导入后：用 Excel 里的渠道自动带出主体/渠道/仓库 */
 const applyImportHeaderFromRows = (rows: ImportRequisitionData[]) => {
   const withChannel = rows.find(r => r.channelCode || r.channelName);
+  const withCompany = rows.find(r => r.companyCode || r.companyName);
   if (!withChannel) {
     ElMessage.warning('Excel 未识别到渠道编码/名称，请在上方手工选择渠道，或使用新模板');
     return;
   }
-  let companyId = resolveCompanyIdFromRow(withChannel);
+  let companyId = resolveCompanyIdFromRow(withCompany || withChannel);
   const ch = resolveChannelFromRow(withChannel, companyId || undefined);
   if (!ch) {
     ElMessage.error(
@@ -318,7 +312,7 @@ const applyImportHeaderFromRows = (rows: ImportRequisitionData[]) => {
   }
   if (!companyId) companyId = resolveCompanyIdFromRow(withChannel, ch.id);
   if (!companyId) {
-    ElMessage.error('无法确定主体，请在 Excel 填写主体编码，或先在渠道上绑定主体');
+    ElMessage.error('无法确定主体，请填写主体编码或名称，或先在渠道上绑定主体');
     return;
   }
   form.value.companyId = companyId;
@@ -334,7 +328,7 @@ const handleImport = async (event: Event) => {
   importData.value = parseExcelRows(rows);
   stockCheckResults.value = [];
   if (!importData.value.length) {
-    ElMessage.warning('未解析到有效要货行（需要商品编码）');
+    ElMessage.warning('未解析到有效要货行（商品编码或名称填一个即可，需能匹配商品档案）');
     return;
   }
   applyImportHeaderFromRows(importData.value);
@@ -345,6 +339,7 @@ const downloadDemandTemplate = () => {
   downloadTemplate(
     [
       '主体编码',
+      '主体名称',
       '渠道编码',
       '渠道名称',
       '仓库编码(逗号分隔)',
@@ -823,7 +818,7 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
             <HelpTip
               inline
               title="Excel 列说明"
-              content="列：主体编码、渠道编码、渠道名称、仓库编码(逗号分隔)、商品编码、商品名称、数量、备注。渠道编码优先；无编码可用渠道名称。仓库列可空=自动勾选该渠道全部绑定仓。"
+              content="列：主体编码/名称、渠道编码/名称、仓库编码或名称(逗号分隔)、商品编码/名称、数量、备注。主体/渠道/商品/仓库：编码或名称填一个即可（写反也能配上）。仓库列可空=自动勾选该渠道全部绑定仓。"
             />
             <ElButton size="small" @click="downloadDemandTemplate">下载模板</ElButton>
             <ElButton size="small" type="primary" :disabled="!importData.length" @click="runStockCheck">验库存</ElButton>

@@ -260,6 +260,67 @@ async function main() {
     ok('高优占用含已通过', higher >= 9999, `higher=${higher}`);
   }
 
+  console.log('\n[9b] 要货导入：编码或名称填一个即可');
+  {
+    const co = useCompanyStore();
+    const chStore = useChannelStore();
+    const pr = useProductStore();
+    const whStore = useWarehouseStore();
+    const sampleCo = co.companies.find(c => c.code && c.name) || co.companies[0];
+    const sampleCh =
+      chStore.channels.find(c => c.enabled !== false && c.code && c.name) || chStore.channels[0];
+    const samplePr = pr.products.find(p => p.code && p.name) || pr.products[0];
+    const sampleWh = whStore.warehouses.find(w => w.code && w.name) || whStore.warehouses[0];
+
+    ok('主体：仅编码可匹配', co.resolveCompany(sampleCo.code)?.id === sampleCo.id);
+    ok('主体：仅名称可匹配', co.resolveCompany(undefined, sampleCo.name)?.id === sampleCo.id);
+    ok('主体：名称写在编码列可匹配', co.resolveCompany(sampleCo.name)?.id === sampleCo.id);
+    ok('主体：编码写在名称列可匹配', co.resolveCompany(undefined, sampleCo.code)?.id === sampleCo.id);
+
+    ok(
+      '渠道：仅编码可匹配',
+      chStore.resolveChannel(sampleCh.code)?.id === sampleCh.id,
+    );
+    ok(
+      '渠道：仅名称可匹配',
+      chStore.resolveChannel(undefined, sampleCh.name)?.id === sampleCh.id,
+    );
+    ok(
+      '渠道：名称写在编码列可匹配',
+      chStore.resolveChannel(sampleCh.name)?.id === sampleCh.id,
+    );
+    ok(
+      '渠道：编码写在名称列可匹配',
+      chStore.resolveChannel(undefined, sampleCh.code)?.id === sampleCh.id,
+    );
+
+    ok('商品：仅编码可匹配', pr.resolveProduct(samplePr.code)?.code === samplePr.code);
+    ok('商品：仅名称可匹配', pr.resolveProduct(undefined, samplePr.name)?.code === samplePr.code);
+    ok('商品：名称写在编码列可匹配', pr.resolveProduct(samplePr.name)?.code === samplePr.code);
+    ok('商品：编码写在名称列可匹配', pr.resolveProduct(undefined, samplePr.code)?.code === samplePr.code);
+
+    ok('仓库：仅编码可匹配', whStore.resolveWarehouse(sampleWh.code)?.id === sampleWh.id);
+    ok('仓库：仅名称可匹配', whStore.resolveWarehouse(sampleWh.name)?.id === sampleWh.id);
+    ok(
+      '仓库：空仓列时渠道可用仓非空',
+      getChannelAllowedWarehouses(sampleCh.id).length > 0,
+      `n=${getChannelAllowedWarehouses(sampleCh.id).length}`,
+    );
+
+    // 模拟导入行：无商品编码、仅名称 → 应解析出编码
+    const nameOnly = pr.resolveProduct('', samplePr.name);
+    ok('导入场景：仅商品名称能落到编码', !!nameOnly && nameOnly.code === samplePr.code);
+
+    // 仅渠道名称 + 仅主体名称 → 能配上
+    const coByName = co.resolveCompany('', sampleCo.name);
+    const chByName = chStore.resolveChannel('', sampleCh.name, coByName?.id);
+    ok(
+      '导入场景：主体名+渠道名可配上头',
+      !!coByName && !!chByName && chByName.id === sampleCh.id,
+      `co=${coByName?.code} ch=${chByName?.code}`,
+    );
+  }
+
   console.log('\n[10] 要货 migrate 保留跨主体仓');
   const whB = wh.warehouses.find(w => w.companyId && w.companyId !== 'COMP001');
   if (whB) {

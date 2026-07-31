@@ -197,12 +197,34 @@ export const useChannelStore = defineStore('channel', () => {
   const getChannelById = (id: string) => channels.value.find(c => c.id === id);
 
   const getChannelByCode = (code: string) =>
-    channels.value.find(c => c.code.toUpperCase() === String(code).trim().toUpperCase());
+    channels.value.find(c => c.code.toUpperCase() === String(code || '').trim().toUpperCase());
 
-  const getChannelByName = (name: string, companyId?: string) =>
-    channels.value.find(
-      c => c.name === name && (!companyId || channelBelongsToCompany(c, companyId)),
+  const getChannelByName = (name: string, companyId?: string) => {
+    const key = String(name || '').trim().toLowerCase();
+    if (!key) return undefined;
+    return channels.value.find(
+      c =>
+        String(c.name || '').trim().toLowerCase() === key
+        && (!companyId || channelBelongsToCompany(c, companyId)),
     );
+  };
+
+  /** 编码或名称填一个即可（两列任意一列有值都可匹配编码或名称） */
+  const resolveChannel = (codeOrName?: string, fallbackName?: string, companyId?: string) => {
+    for (const raw of [codeOrName, fallbackName]) {
+      const t = String(raw || '').trim();
+      if (!t) continue;
+      const byCode = getChannelByCode(t);
+      if (byCode && byCode.enabled !== false) return byCode;
+      if (companyId) {
+        const byName = getChannelByName(t, companyId);
+        if (byName && byName.enabled !== false) return byName;
+      }
+      const any = getChannelByName(t);
+      if (any && any.enabled !== false) return any;
+    }
+    return undefined;
+  };
 
   const getChannelsByCompany = (companyId: string, opts?: { includeDisabled?: boolean }) =>
     channels.value.filter(
@@ -295,6 +317,7 @@ export const useChannelStore = defineStore('channel', () => {
     getChannelById,
     getChannelByCode,
     getChannelByName,
+    resolveChannel,
     getChannelsByCompany,
     getChannelsSortedByPriority,
     getHigherPriorityChannels,

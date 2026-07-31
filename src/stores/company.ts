@@ -122,7 +122,31 @@ export const useCompanyStore = defineStore('company', () => {
 
   const getCompanyByCode = (code: string) => {
     const key = normCode(code).toUpperCase();
+    if (!key) return undefined;
     return companies.value.find(c => normCode(c.code).toUpperCase() === key);
+  };
+
+  /** 按名称匹配（忽略空格大小写；编码/名称填一个即可时用） */
+  const getCompanyByName = (name: string) => {
+    const key = canonicalCompanyName(name, '').replace(/\s+/g, '').toLowerCase();
+    if (!key) return undefined;
+    return companies.value.find(c => {
+      const n = canonicalCompanyName(c.name, c.code).replace(/\s+/g, '').toLowerCase();
+      return n === key || normCode(c.code).toLowerCase() === key;
+    });
+  };
+
+  /** 编码或名称任一命中即可 */
+  const resolveCompany = (codeOrName?: string, fallbackName?: string) => {
+    for (const raw of [codeOrName, fallbackName]) {
+      const t = String(raw || '').trim();
+      if (!t) continue;
+      const byCode = getCompanyByCode(t);
+      if (byCode) return byCode;
+      const byName = getCompanyByName(t);
+      if (byName) return byName;
+    }
+    return undefined;
   };
 
   const upsertByCode = (data: { code: string; name: string }) => {
@@ -147,6 +171,8 @@ export const useCompanyStore = defineStore('company', () => {
     deleteCompany,
     getCompanyById,
     getCompanyByCode,
+    getCompanyByName,
+    resolveCompany,
     upsertByCode,
   };
 }, {
