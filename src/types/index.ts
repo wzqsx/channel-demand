@@ -78,6 +78,14 @@ export interface Requisition {
 }
 
 export interface ImportRequisitionData {
+  /** 主体编码（可选；有渠道时可从渠道反推） */
+  companyCode?: string;
+  /** 渠道编码（优先） */
+  channelCode?: string;
+  /** 渠道名称（编码空时用） */
+  channelName?: string;
+  /** 仓库编码，逗号分隔（可选；空则自动勾选渠道全部绑定仓） */
+  warehouseCodes?: string;
   productCode: string;
   productName: string;
   quantity: number;

@@ -209,16 +209,34 @@ const companyFilterOptions = computed(() =>
 const parseExcelRows = (jsonData: any[]): ImportRequisitionData[] => {
   const converted: ImportRequisitionData[] = [];
   jsonData.forEach((item: any) => {
+    const companyCode = cell(item, '主体编码', '公司编码', 'companyCode', 'company');
+    const channelCode = cell(item, '渠道编码', 'channelCode', 'channel');
+    const channelName = cell(item, '渠道名称', 'channelName');
+    const warehouseCodes = cell(
+      item,
+      '仓库编码(逗号分隔)',
+      '仓库编码',
+      'warehouseCodes',
+      'warehouseCode',
+    );
     const productCode = cell(item, '商品编码', 'code');
     const productName = cell(item, '商品名称', 'name');
     let quantity = cellNum(item, '数量', 'quantity', '要货数量', '销量');
     const remark = cell(item, '备注', 'remark');
     if (!productCode) return;
 
+    const baseMeta = {
+      companyCode: companyCode || undefined,
+      channelCode: channelCode || undefined,
+      channelName: channelName || undefined,
+      warehouseCodes: warehouseCodes || undefined,
+    };
+
     const product = productStore.getProductByCode(productCode);
     if (product?.combineProductCode && product.combineRatio > 0) {
       quantity = quantity * product.combineRatio;
       converted.push({
+        ...baseMeta,
         productCode: product.combineProductCode,
         productName: (productName || product.name) + ` (组合→${product.combineProductCode})`,
         quantity,
@@ -226,6 +244,7 @@ const parseExcelRows = (jsonData: any[]): ImportRequisitionData[] => {
       });
     } else {
       converted.push({
+        ...baseMeta,
         productCode,
         productName: productName || product?.name || productCode,
         quantity,
@@ -236,15 +255,106 @@ const parseExcelRows = (jsonData: any[]): ImportRequisitionData[] => {
   return converted;
 };
 
+/** 从导入行解析渠道：编码优先，其次名称（可限定主体） */
+const resolveChannelFromRow = (row: ImportRequisitionData, companyId?: string) => {
+  if (row.channelCode) {
+    const byCode = channelStore.getChannelByCode(row.channelCode);
+    if (byCode && byCode.enabled !== false) return byCode;
+  }
+  if (row.channelName) {
+    const name = row.channelName.trim();
+    if (companyId) {
+      const hit = channelStore.getChannelByName(name, companyId);
+      if (hit && hit.enabled !== false) return hit;
+    }
+    const any = channelStore.channels.find(c => c.enabled !== false && c.name === name);
+    if (any) return any;
+  }
+  return undefined;
+};
+
+const resolveCompanyIdFromRow = (row: ImportRequisitionData, channelId?: string) => {
+  if (row.companyCode) {
+    const c = companyStore.getCompanyByCode(row.companyCode);
+    if (c) return c.id;
+  }
+  if (channelId) {
+    const ch = channelStore.getChannelById(channelId);
+    if (ch?.companyId) return ch.companyId;
+    if (ch?.companyIds?.length) return ch.companyIds[0];
+  }
+  return '';
+};
+
+const resolveWarehouseIdsFromRow = (row: ImportRequisitionData, channelId: string) => {
+  const allowed = getChannelAllowedWarehouses(channelId);
+  if (!row.warehouseCodes?.trim()) return allowed.map(w => w.id);
+  const codes = row.warehouseCodes.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+  const ids: string[] = [];
+  const allowedSet = new Set(allowed.map(w => w.id));
+  for (const code of codes) {
+    const w =
+      warehouseStore.getWarehouseByCode(code)
+      || warehouseStore.warehouses.find(x => x.name === code || x.id === code);
+    if (w && allowedSet.has(w.id) && !ids.includes(w.id)) ids.push(w.id);
+  }
+  return ids.length ? ids : allowed.map(w => w.id);
+};
+
+/** 导入后：用 Excel 里的渠道自动带出主体/渠道/仓库 */
+const applyImportHeaderFromRows = (rows: ImportRequisitionData[]) => {
+  const withChannel = rows.find(r => r.channelCode || r.channelName);
+  if (!withChannel) {
+    ElMessage.warning('Excel 未识别到渠道编码/名称，请在上方手工选择渠道，或使用新模板');
+    return;
+  }
+  let companyId = resolveCompanyIdFromRow(withChannel);
+  const ch = resolveChannelFromRow(withChannel, companyId || undefined);
+  if (!ch) {
+    ElMessage.error(
+      `找不到渠道：${withChannel.channelCode || withChannel.channelName || ''}，请检查编码/名称或先到渠道管理维护`,
+    );
+    return;
+  }
+  if (!companyId) companyId = resolveCompanyIdFromRow(withChannel, ch.id);
+  if (!companyId) {
+    ElMessage.error('无法确定主体，请在 Excel 填写主体编码，或先在渠道上绑定主体');
+    return;
+  }
+  form.value.companyId = companyId;
+  form.value.channelId = ch.id;
+  form.value.warehouseIds = resolveWarehouseIdsFromRow(withChannel, ch.id);
+  if (!form.value.warehouseIds.length) {
+    ElMessage.warning(`渠道「${ch.name}」未绑定仓库，请到渠道管理勾选`);
+  }
+};
+
 const handleImport = async (event: Event) => {
   const rows = await readExcelFromEvent(event);
   importData.value = parseExcelRows(rows);
   stockCheckResults.value = [];
+  if (!importData.value.length) {
+    ElMessage.warning('未解析到有效要货行（需要商品编码）');
+    return;
+  }
+  applyImportHeaderFromRows(importData.value);
   ElMessage.success(`已导入 ${importData.value.length} 行要货`);
 };
 
 const downloadDemandTemplate = () => {
-  downloadTemplate(['商品编码', '商品名称', '数量', '备注'], '要货导入模板');
+  downloadTemplate(
+    [
+      '主体编码',
+      '渠道编码',
+      '渠道名称',
+      '仓库编码(逗号分隔)',
+      '商品编码',
+      '商品名称',
+      '数量',
+      '备注',
+    ],
+    '要货导入模板',
+  );
 };
 
 const exportList = () => {
@@ -710,7 +820,11 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
           <div>
             <input ref="demandFileRef" type="file" accept=".xlsx,.xls" class="hidden-file" @change="handleImport" />
             <ElButton size="small" @click="triggerFile(demandFileRef)">导入 Excel</ElButton>
-            <HelpTip inline title="Excel 列说明" content="列：商品编码、商品名称、数量、备注" />
+            <HelpTip
+              inline
+              title="Excel 列说明"
+              content="列：主体编码、渠道编码、渠道名称、仓库编码(逗号分隔)、商品编码、商品名称、数量、备注。渠道编码优先；无编码可用渠道名称。仓库列可空=自动勾选该渠道全部绑定仓。"
+            />
             <ElButton size="small" @click="downloadDemandTemplate">下载模板</ElButton>
             <ElButton size="small" type="primary" :disabled="!importData.length" @click="runStockCheck">验库存</ElButton>
             <HelpTip
@@ -722,6 +836,11 @@ const demandFileRef = ref<HTMLInputElement | null>(null);
         </div>
         <ElTable v-if="importData.length" :data="importData" border size="small" max-height="220">
           <ElTableColumn type="index" label="序号" width="55" />
+          <ElTableColumn label="渠道" min-width="120" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ row.channelCode || row.channelName || '—' }}
+            </template>
+          </ElTableColumn>
           <ElTableColumn prop="productCode" label="商品编码" width="120" sortable />
           <ElTableColumn prop="productName" label="商品名称" min-width="160" sortable />
           <ElTableColumn prop="quantity" label="数量" width="120" sortable show-overflow-tooltip>
